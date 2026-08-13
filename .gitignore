@@ -1,0 +1,14 @@
+# Private per-client configuration and planning. This may be a real directory
+# or a symlink to a private repository outside this public clone.
+.private
+.docs
+
+# Local evidence and convenience configs must never enter the public repo.
+runs
+*.local.conf
+client-*.conf
+
+# Generated development files.
+__pycache__/
+*.pyc
+.DS_Store

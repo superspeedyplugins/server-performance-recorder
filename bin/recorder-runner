@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd -P)
+# shellcheck source=../lib/common.sh
+source "$ROOT/lib/common.sh"
+
+config=$(spr_absolute_path "${1:?config required}")
+run_dir=$(spr_absolute_path "${2:?run directory required}")
+manifest="$run_dir/run.json"
+collector_pid=
+exec >> "$run_dir/logs/runner.log" 2>&1
+
+fail() {
+    local line=$1
+    local command=$2
+    local code=$3
+    trap - ERR TERM INT
+    [[ -n ${collector_pid:-} ]] && kill "$collector_pid" 2>/dev/null || true
+    python3 "$ROOT/scripts/manifest.py" "$manifest" fail "runner failed at line $line (exit $code): $command" || true
+    printf '%s\n' "failed" > "$run_dir/control/terminal"
+    exit "$code"
+}
+
+stop() {
+    trap - ERR TERM INT
+    [[ -n ${collector_pid:-} ]] && kill "$collector_pid" 2>/dev/null || true
+    python3 "$ROOT/scripts/manifest.py" "$manifest" set status=stopped stopped_at="$(spr_utc_now)" || true
+    printf '%s\n' "stopped" > "$run_dir/control/terminal"
+    exit 130
+}
+
+trap 'fail "$LINENO" "$BASH_COMMAND" "$?"' ERR
+trap stop TERM INT
+
+spr_load_config "$config"
+spr_validate_config
+mkdir -p "$run_dir/config" "$run_dir/control" "$run_dir/inventory" "$run_dir/telemetry"
+
+spr_resolve_disk_devices
+disk_devices=$SPR_DISK_DEVICES
+
+page_size=$(getconf PAGE_SIZE 2>/dev/null || printf '4096')
+export PAGE_SIZE_KB=$((page_size / 1024))
+python3 "$ROOT/scripts/write-effective.py" "$run_dir/config/effective.json" --config "$config" --disk-devices "$disk_devices"
+"$ROOT/bin/inventory" "$run_dir/inventory/start.txt" start
+
+printf '%s\n' 'epoch,cpu_user,cpu_nice,cpu_system,cpu_idle,cpu_iowait,cpu_irq,cpu_softirq,cpu_steal,mem_total_kb,mem_available_kb,swap_total_kb,swap_free_kb,load1,load5,load15,disk_read_sectors,disk_write_sectors,disk_io_ms,network_rx_bytes,network_tx_bytes,recorder_utime_ticks,recorder_stime_ticks,recorder_cutime_ticks,recorder_cstime_ticks,recorder_rss_kb' > "$run_dir/telemetry/system.csv"
+
+start_epoch=$(spr_epoch_now)
+end_epoch=$((start_epoch + DURATION_SECONDS))
+python3 "$ROOT/scripts/manifest.py" "$manifest" set status=observing timestamps.start_epoch="$start_epoch" timestamps.planned_end_epoch="$end_epoch" disk_devices="$disk_devices"
+printf '%s\n' "$start_epoch" > "$run_dir/control/heartbeat"
+
+spr_nice_prefix
+"${SPR_NICE[@]}" "$ROOT/bin/sample-system" "$run_dir/telemetry/system.csv" "$disk_devices" "$DURATION_SECONDS" "$SAMPLE_INTERVAL_SECONDS" "$run_dir/control/heartbeat" &
+collector_pid=$!
+python3 "$ROOT/scripts/manifest.py" "$manifest" set processes.system_collector_pid="$collector_pid"
+wait "$collector_pid"
+collector_pid=
+
+actual_end=$(spr_epoch_now)
+"$ROOT/bin/inventory" "$run_dir/inventory/end.txt" end
+python3 "$ROOT/scripts/manifest.py" "$manifest" set status=collected timestamps.end_epoch="$actual_end"
+
+"${SPR_NICE[@]}" python3 "$ROOT/scripts/summarise.py" "$run_dir"
+python3 "$ROOT/scripts/manifest.py" "$manifest" set status=summarised
+python3 "$ROOT/scripts/validate.py" "$run_dir" > "$run_dir/validation.txt"
+"${SPR_NICE[@]}" python3 "$ROOT/scripts/checksums.py" "$run_dir"
+python3 "$ROOT/scripts/manifest.py" "$manifest" set status=validated validation.status=passed
+printf '%s\n' "validated" > "$run_dir/control/terminal"

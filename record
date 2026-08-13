@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+umask 077
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd -P)
+# shellcheck source=lib/common.sh
+source "$ROOT/lib/common.sh"
+
+DEFAULT_CONFIG="${SPR_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/server-performance-recorder/config.conf}"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  record setup [CONFIG]
+  record check CONFIG
+  record launch CONFIG
+  record collect [CONFIG]
+  record status RUN_DIR
+  record wait RUN_DIR
+  record stop RUN_DIR
+  record validate RUN_DIR
+
+The launch command prints the unique evidence-bundle directory. Keep it: all
+subsequent commands operate on that directory, never on a mutable "latest" run.
+EOF
+}
+
+ask() {
+    local question=$1
+    local default=${2:-}
+    local answer
+    if [[ -n "$default" ]]; then
+        printf '%s [%s]: ' "$question" "$default"
+    else
+        printf '%s: ' "$question"
+    fi
+    IFS= read -r answer
+    REPLY=${answer:-$default}
+}
+
+ask_required() {
+    local question=$1
+    local default=${2:-}
+    while true; do
+        ask "$question" "$default"
+        [[ -n "$REPLY" ]] && return
+        printf 'Please enter a value.\n'
+    done
+}
+
+ask_yes() {
+    local question=$1
+    local default=${2:-y}
+    ask "$question" "$default"
+    [[ "$REPLY" =~ ^[Yy]([Ee][Ss])?$ ]]
+}
+
+write_setting() {
+    local target=$1
+    local key=$2
+    local value=$3
+    printf '%s=' "$key" >> "$target"
+    printf '%q' "$value" >> "$target"
+    printf '\n' >> "$target"
+}
+
+setup_interactive() {
+    local requested=${1:-$DEFAULT_CONFIG}
+    [[ -t 0 ]] || spr_die 'setup needs an interactive terminal'
+    if (( EUID == 0 )) && [[ -n ${SUDO_USER:-} ]]; then
+        spr_warn "Run setup as $SUDO_USER rather than through sudo, so private files are stored under the intended account"
+    fi
+
+    local parent
+    parent=$(dirname -- "$requested")
+    mkdir -p -- "$parent"
+    local config
+    config=$(spr_absolute_path "$requested")
+    if [[ -e "$config" ]]; then
+        ask_yes "Replace existing config $config?" n || { printf 'Kept existing config.\n'; return 0; }
+    fi
+
+    printf '\nThis records whole-server impact. It does not generate traffic or copy Nginx logs.\n\n'
+    ask_required 'Run label' before-change
+    local run_label=$REPLY
+    ask_required 'Site or workload being measured' ''
+    local observed_site=$REPLY
+    while true; do
+        ask 'How many websites share this server? Use unknown if not relevant or unsure' unknown
+        local server_site_count=$REPLY
+        [[ "$server_site_count" == unknown || "$server_site_count" =~ ^[0-9]+$ ]] && break
+        printf 'Enter a whole number or unknown.\n'
+    done
+    local default_note="Whole-server recording while measuring $observed_site."
+    if [[ "$server_site_count" != unknown ]]; then
+        default_note+=" The observed site was one of $server_site_count hosted sites."
+    fi
+    ask 'Anything unusual or important to qualify this window?' "$default_note"
+    local environment_note=$REPLY
+
+    while true; do
+        ask 'Recording duration in hours' 24
+        local duration_hours=$REPLY
+        [[ "$duration_hours" =~ ^[1-9][0-9]*$ ]] && break
+        printf 'Enter a positive whole number of hours.\n'
+    done
+    local duration_seconds=$((duration_hours * 3600))
+
+    printf '\nDetected block devices:\n'
+    lsblk -o NAME,KNAME,TYPE,SIZE,FSTYPE,MOUNTPOINTS 2>/dev/null || true
+    printf '\nUse auto for the device mounted at /. List exact kernel names separated by spaces if the database or cache uses additional disks.\n'
+    ask 'Block devices to record' auto
+    local disk_devices=$REPLY
+
+    ask 'Existing site-specific Nginx access-log path (optional)' ''
+    local nginx_log_path=$REPLY
+    local default_output="${XDG_STATE_HOME:-$HOME/.local/state}/server-performance-recorder/runs"
+    ask 'Evidence output directory' "$default_output"
+    local output_root=$REPLY
+
+    local temporary="${config}.tmp.$$"
+    : > "$temporary"
+    write_setting "$temporary" RUN_LABEL "$run_label"
+    write_setting "$temporary" OBSERVED_SITE "$observed_site"
+    write_setting "$temporary" SERVER_SITE_COUNT "$server_site_count"
+    write_setting "$temporary" ENVIRONMENT_NOTE "$environment_note"
+    write_setting "$temporary" DURATION_SECONDS "$duration_seconds"
+    write_setting "$temporary" SAMPLE_INTERVAL_SECONDS 10
+    write_setting "$temporary" OUTPUT_ROOT "$output_root"
+    write_setting "$temporary" DISK_DEVICES "$disk_devices"
+    write_setting "$temporary" LOW_PRIORITY 1
+    write_setting "$temporary" NGINX_LOG_PATH "$nginx_log_path"
+    chmod 600 "$temporary"
+    mv -f -- "$temporary" "$config"
+
+    printf '\nSaved private config: %s\n' "$config"
+    printf 'Planned samples: %s\n' "$((duration_seconds / 10 + 1))"
+    printf 'Sampling: 10 seconds, nice 19, idle I/O priority\n'
+    printf 'Scope: whole server; observed site %s of %s hosted sites\n\n' "$observed_site" "$server_site_count"
+
+    if ask_yes 'Run preflight and start recording now?' y; then
+        exec "$0" launch "$config"
+    fi
+    "$0" check "$config"
+    printf '\nLaunch later with:\n  %q launch %q\n' "$0" "$config"
+}
+
+require_run() {
+    local run=${1:?run directory required}
+    [[ -d "$run" && -r "$run/run.json" ]] || spr_die "Not a recorder run directory: $run"
+}
+
+check_config() {
+    local config=$1
+    spr_load_config "$config"
+    spr_validate_config
+
+    local failures=0
+    local required
+    for required in bash python3; do
+        if command -v "$required" >/dev/null 2>&1; then
+            printf 'PASS  %-22s %s\n' "$required" "$(command -v "$required")"
+        else
+            printf 'FAIL  %-22s not found\n' "$required"
+            failures=$((failures + 1))
+        fi
+    done
+    for required in /proc/stat /proc/meminfo /proc/loadavg /proc/net/dev; do
+        if [[ -r "$required" ]]; then
+            printf 'PASS  %-22s readable\n' "$required"
+        else
+            printf 'FAIL  %-22s not readable; this recorder requires Linux procfs\n' "$required"
+            failures=$((failures + 1))
+        fi
+    done
+    if [[ -d /sys/class/block ]]; then
+        printf 'PASS  %-22s readable\n' '/sys/class/block'
+        spr_resolve_disk_devices
+        printf 'PASS  %-22s %s\n' disk_devices "$SPR_DISK_DEVICES"
+    else
+        printf 'FAIL  %-22s not readable; disk I/O cannot be measured\n' '/sys/class/block'
+        failures=$((failures + 1))
+    fi
+
+    local rows bytes
+    rows=$(((DURATION_SECONDS + SAMPLE_INTERVAL_SECONDS - 1) / SAMPLE_INTERVAL_SECONDS + 1))
+    bytes=$((rows * 300))
+    printf 'INFO  %-22s %s seconds\n' duration "$DURATION_SECONDS"
+    printf 'INFO  %-22s %s seconds\n' sample_interval "$SAMPLE_INTERVAL_SECONDS"
+    printf 'INFO  %-22s %s rows\n' estimated_samples "$rows"
+    printf 'INFO  %-22s approximately %s KiB before metadata\n' estimated_csv_size "$((bytes / 1024))"
+    printf 'INFO  %-22s %s\n' scope 'whole server'
+    printf 'INFO  %-22s %s\n' hosted_sites "$SERVER_SITE_COUNT"
+    printf 'INFO  %-22s %s\n' low_priority "$LOW_PRIORITY"
+
+    if [[ -n "$NGINX_LOG_PATH" ]]; then
+        if [[ -r "$NGINX_LOG_PATH" ]]; then
+            printf 'PASS  %-22s readable: %s\n' nginx_log "$NGINX_LOG_PATH"
+            if tail -n 20 -- "$NGINX_LOG_PATH" 2>/dev/null | grep -Eiq '(^|[^A-Z])(HIT|MISS|BYPASS|EXPIRED|STALE|REVALIDATED)([^A-Z]|$)'; then
+                printf 'PASS  %-22s cache-status tokens found near end of log\n' nginx_cache_status
+            else
+                printf 'WARN  %-22s no cache-status tokens found in last 20 lines; verify the format before relying on cache hit/miss analysis\n' nginx_cache_status
+            fi
+        else
+            printf 'WARN  %-22s not readable now: %s\n' nginx_log "$NGINX_LOG_PATH"
+        fi
+    else
+        printf 'WARN  %-22s not recorded; set NGINX_LOG_PATH so the later analysis has provenance\n' nginx_log
+    fi
+    (( failures == 0 ))
+}
+
+command=${1:-}
+case "$command" in
+    setup)
+        [[ $# -le 2 ]] || { usage; exit 2; }
+        setup_interactive "${2:-$DEFAULT_CONFIG}"
+        ;;
+    check)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        check_config "$2"
+        ;;
+    launch)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        config=$(spr_absolute_path "$2")
+        check_config "$config" || spr_die 'Preflight failed; no recording was started'
+        spr_load_config "$config"
+        mkdir -p -- "$OUTPUT_ROOT"
+        output_root=$(spr_absolute_path "$OUTPUT_ROOT")
+        timestamp=$(date -u +'%Y%m%dT%H%M%SZ')
+        safe_label=$(printf '%s' "$RUN_LABEL" | tr -cs 'A-Za-z0-9._-' '-' | sed 's/^-//; s/-$//')
+        [[ -n "$safe_label" ]] || safe_label=recording
+        run_id="${timestamp}-${safe_label}-${RANDOM}${RANDOM}"
+        run_dir="$output_root/$run_id"
+        [[ ! -e "$run_dir" ]] || spr_die "Refusing to overwrite existing run: $run_dir"
+        mkdir -p "$run_dir/control" "$run_dir/logs" "$run_dir/runtime/bin" "$run_dir/runtime/lib" "$run_dir/runtime/scripts"
+        cp "$ROOT"/bin/* "$run_dir/runtime/bin/"
+        cp "$ROOT"/lib/*.sh "$run_dir/runtime/lib/"
+        cp "$ROOT"/scripts/*.py "$run_dir/runtime/scripts/"
+        cp "$ROOT/record" "$run_dir/runtime/record"
+        runtime_root="$run_dir/runtime"
+        python3 "$ROOT/scripts/manifest.py" "$run_dir/run.json" init --run-id "$run_id" --label "$RUN_LABEL"
+        source_commit=unversioned
+        source_dirty=null
+        if command -v git >/dev/null 2>&1 && [[ $(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || true) == "$ROOT" ]]; then
+            source_commit=$(git -C "$ROOT" rev-parse HEAD)
+            if [[ -z $(git -C "$ROOT" status --porcelain --untracked-files=normal -- bin lib scripts record setup collect) ]]; then source_dirty=false; else source_dirty=true; fi
+        fi
+        python3 "$runtime_root/scripts/manifest.py" "$run_dir/run.json" set runner.detached=true status=preflight_passed runtime.snapshot_path=runtime source.git_commit="$source_commit" source.dirty="$source_dirty"
+        pointer="$output_root/.last-run"
+        printf '%s\n' "$run_dir" > "${pointer}.tmp.$$"
+        chmod 600 "${pointer}.tmp.$$"
+        mv -f -- "${pointer}.tmp.$$" "$pointer"
+        spr_background "$runtime_root/bin/recorder-runner" "$config" "$run_dir"
+        runner_pid=$SPR_BACKGROUND_PID
+        python3 "$runtime_root/scripts/manifest.py" "$run_dir/run.json" set runner.pid="$runner_pid"
+        spr_background "$runtime_root/bin/recorder-watchdog" "$run_dir" "$runner_pid"
+        watchdog_pid=$SPR_BACKGROUND_PID
+        python3 "$runtime_root/scripts/manifest.py" "$run_dir/run.json" set watchdog.pid="$watchdog_pid" watchdog.enabled=true
+        printf '\nLaunched: %s\nRunner PID: %s\nWatchdog PID: %s\n\n' "$run_dir" "$runner_pid" "$watchdog_pid"
+        printf 'Check it with:\n  %q status %q\n' "$0" "$run_dir"
+        ;;
+    collect)
+        [[ $# -le 2 ]] || { usage; exit 2; }
+        config=${2:-$DEFAULT_CONFIG}
+        spr_load_config "$config"
+        pointer="$OUTPUT_ROOT/.last-run"
+        [[ -r "$pointer" ]] || spr_die "No remembered run for this config: $pointer"
+        read -r run_dir < "$pointer"
+        require_run "$run_dir"
+        status=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$run_dir/run.json")
+        if [[ "$status" != validated && "$status" != failed && "$status" != stopped ]]; then
+            "$0" status "$run_dir"
+            spr_die 'This recording is still running; come back after it reaches validated, failed or stopped'
+        fi
+        if [[ "$status" == validated ]]; then
+            "$0" validate "$run_dir"
+        else
+            spr_warn "Packaging an incomplete run with status: $status"
+        fi
+        archive="${run_dir}.tar.gz"
+        if [[ ! -f "$archive" ]]; then
+            command -v tar >/dev/null 2>&1 || spr_die 'tar is required to package the evidence bundle'
+            spr_nice_prefix
+            "${SPR_NICE[@]}" tar -C "$(dirname -- "$run_dir")" -czf "$archive" "$(basename -- "$run_dir")"
+            chmod 600 "$archive"
+        fi
+        printf '\nRun status: %s\nEvidence directory: %s\nDownload archive: %s\n' "$status" "$run_dir" "$archive"
+        ;;
+    status)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        require_run "$2"
+        python3 - "$2/run.json" <<'PY'
+import json, sys, time
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+print(f"Run:       {value.get('run_id', '')}")
+print(f"Label:     {value.get('label', '')}")
+print(f"Status:    {value.get('status', '')}")
+print(f"Started:   {value.get('timestamps', {}).get('start_epoch', '')}")
+print(f"Ends:      {value.get('timestamps', {}).get('planned_end_epoch', '')}")
+if value.get("errors"):
+    print("Errors:")
+    for error in value["errors"]:
+        print(f"  - {error}")
+PY
+        if [[ -r "$2/control/heartbeat" ]]; then
+            read -r heartbeat < "$2/control/heartbeat" || heartbeat=0
+            if [[ $heartbeat =~ ^[0-9]+$ ]]; then
+                printf 'Heartbeat: %s seconds ago\n' "$(( $(date +'%s') - heartbeat ))"
+            fi
+        fi
+        if [[ -r "$2/telemetry/system.csv" ]]; then
+            rows=$(awk 'END {print (NR > 0 ? NR - 1 : 0)}' "$2/telemetry/system.csv")
+            printf 'Samples:   %s\n' "$rows"
+        fi
+        ;;
+    wait)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        require_run "$2"
+        while [[ ! -f "$2/control/terminal" ]]; do sleep 5; done
+        "$0" status "$2"
+        [[ $(<"$2/control/terminal") == validated ]]
+        ;;
+    stop)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        require_run "$2"
+        runner_pid=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["runner"]["pid"])' "$2/run.json")
+        [[ $runner_pid =~ ^[0-9]+$ ]] || spr_die 'Manifest contains no valid runner PID'
+        if [[ -r "/proc/$runner_pid/cmdline" ]]; then
+            cmdline=$(tr '\0' ' ' < "/proc/$runner_pid/cmdline")
+            [[ "$cmdline" == *recorder-runner* && "$cmdline" == *"$2"* ]] || spr_die "PID $runner_pid does not match this recorder run"
+        fi
+        kill -TERM "$runner_pid"
+        printf 'Stop requested for %s (PID %s)\n' "$2" "$runner_pid"
+        ;;
+    validate)
+        [[ $# == 2 ]] || { usage; exit 2; }
+        require_run "$2"
+        validator="$ROOT/scripts/validate.py"
+        [[ -r "$2/runtime/scripts/validate.py" ]] && validator="$2/runtime/scripts/validate.py"
+        python3 "$validator" "$2" --verify-checksums
+        ;;
+    *)
+        usage
+        exit 2
+        ;;
+esac

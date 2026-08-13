@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+
+set -u
+
+output=${1:?output CSV required}
+disk_devices=${2:-}
+duration=${3:?duration seconds required}
+interval=${4:?sample interval required}
+heartbeat=${5:?heartbeat path required}
+proc_root=${PROC_ROOT:-/proc}
+sys_root=${SYS_ROOT:-/sys}
+page_kb=${PAGE_SIZE_KB:-4}
+
+epoch_now() {
+    if ! printf -v REPLY '%(%s)T' -1 2>/dev/null; then
+        REPLY=$(date +'%s')
+    fi
+}
+
+sample_once() {
+    local cpu_user= cpu_nice= cpu_system= cpu_idle= cpu_iowait= cpu_irq= cpu_softirq= cpu_steal=
+    local mem_total= mem_available= swap_total= swap_free=
+    local load1= load5= load15=
+    local disk_read_sectors= disk_write_sectors= disk_io_ms=
+    local net_rx=0 net_tx=0
+    local obs_utime= obs_stime= obs_cutime= obs_cstime= obs_rss_kb=
+    local key value interface values rx tx device read_sectors write_sectors io_ms
+    local -a fields
+
+    epoch_now
+    local epoch=$REPLY
+
+    if [[ -r "$proc_root/stat" ]]; then
+        read -r _ cpu_user cpu_nice cpu_system cpu_idle cpu_iowait cpu_irq cpu_softirq cpu_steal _ < "$proc_root/stat" || true
+    fi
+
+    if [[ -r "$proc_root/meminfo" ]]; then
+        while read -r key value _; do
+            case "$key" in
+                MemTotal:) mem_total=$value ;;
+                MemAvailable:) mem_available=$value ;;
+                SwapTotal:) swap_total=$value ;;
+                SwapFree:) swap_free=$value ;;
+            esac
+        done < "$proc_root/meminfo"
+    fi
+
+    if [[ -r "$proc_root/loadavg" ]]; then
+        read -r load1 load5 load15 _ < "$proc_root/loadavg" || true
+    fi
+
+    disk_read_sectors=0
+    disk_write_sectors=0
+    disk_io_ms=0
+    for device in $disk_devices; do
+        if [[ -r "$sys_root/class/block/$device/stat" ]]; then
+            read -r _ _ read_sectors _ _ _ write_sectors _ _ io_ms _ < "$sys_root/class/block/$device/stat" || true
+            disk_read_sectors=$((disk_read_sectors + read_sectors))
+            disk_write_sectors=$((disk_write_sectors + write_sectors))
+            disk_io_ms=$((disk_io_ms + io_ms))
+        fi
+    done
+
+    if [[ -r "$proc_root/net/dev" ]]; then
+        while IFS=: read -r interface values; do
+            interface=${interface//[[:space:]]/}
+            [[ -n "$interface" && "$interface" != lo ]] || continue
+            # shellcheck disable=SC2086
+            read -r rx _ _ _ _ _ _ _ tx _ <<< "$values"
+            [[ $rx =~ ^[0-9]+$ ]] && net_rx=$((net_rx + rx))
+            [[ $tx =~ ^[0-9]+$ ]] && net_tx=$((net_tx + tx))
+        done < "$proc_root/net/dev"
+    fi
+
+    if [[ -r "$proc_root/$$/stat" ]]; then
+        read -r -a fields < "$proc_root/$$/stat" || true
+        if (( ${#fields[@]} >= 24 )); then
+            obs_utime=${fields[13]}
+            obs_stime=${fields[14]}
+            obs_cutime=${fields[15]}
+            obs_cstime=${fields[16]}
+            obs_rss_kb=$((fields[23] * page_kb))
+        fi
+    fi
+
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$epoch" "$cpu_user" "$cpu_nice" "$cpu_system" "$cpu_idle" "$cpu_iowait" "$cpu_irq" "$cpu_softirq" "$cpu_steal" \
+        "$mem_total" "$mem_available" "$swap_total" "$swap_free" "$load1" "$load5" "$load15" \
+        "$disk_read_sectors" "$disk_write_sectors" "$disk_io_ms" "$net_rx" "$net_tx" \
+        "$obs_utime" "$obs_stime" "$obs_cutime" "$obs_cstime" "$obs_rss_kb" >> "$output"
+}
+
+started=$SECONDS
+next_sample=$started
+last_heartbeat=-60
+while (( SECONDS - started <= duration )); do
+    sample_once
+    if (( SECONDS - last_heartbeat >= 60 )); then
+        printf '%s\n' "$REPLY" > "$heartbeat"
+        last_heartbeat=$SECONDS
+    fi
+    next_sample=$((next_sample + interval))
+    if (( next_sample <= SECONDS )); then
+        next_sample=$((SECONDS + interval))
+    fi
+    delay=$((next_sample - SECONDS))
+    remaining=$((duration - (SECONDS - started)))
+    (( remaining > 0 )) || break
+    (( delay > remaining )) && delay=$remaining
+    (( delay > 0 )) && sleep "$delay"
+done

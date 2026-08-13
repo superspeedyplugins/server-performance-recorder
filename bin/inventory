@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+
+set -u
+
+output=${1:?output path required}
+phase=${2:?phase required}
+
+{
+    printf 'captured_at=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+    printf 'phase=%s\n' "$phase"
+    printf 'hostname=%s\n' "$(hostname 2>/dev/null || true)"
+    printf 'kernel=%s\n' "$(uname -srvmo 2>/dev/null || uname -a)"
+    printf 'uptime_seconds='
+    [[ -r /proc/uptime ]] && awk '{print $1}' /proc/uptime || true
+    printf 'cpu_count=%s\n' "$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+    printf 'page_size=%s\n' "$(getconf PAGE_SIZE 2>/dev/null || true)"
+    printf 'clock_ticks=%s\n' "$(getconf CLK_TCK 2>/dev/null || true)"
+    printf '\n[filesystem]\n'
+    df -PT 2>/dev/null || true
+    printf '\n[block_devices]\n'
+    lsblk -o NAME,KNAME,TYPE,SIZE,ROTA,FSTYPE,MOUNTPOINTS 2>/dev/null || true
+    printf '\n[memory]\n'
+    sed -n '1,30p' /proc/meminfo 2>/dev/null || true
+    printf '\n[software]\n'
+    nginx -v 2>&1 || true
+    php -v 2>/dev/null | sed -n '1,2p' || true
+    mysql --version 2>/dev/null || true
+    redis-server --version 2>/dev/null || true
+    netdata -v 2>/dev/null || true
+} > "$output"

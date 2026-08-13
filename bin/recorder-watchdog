@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -u
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." >/dev/null 2>&1 && pwd -P)
+run_dir=${1:?run directory required}
+runner_pid=${2:?runner PID required}
+manifest="$run_dir/run.json"
+heartbeat="$run_dir/control/heartbeat"
+terminal="$run_dir/control/terminal"
+
+while [[ ! -f "$terminal" ]]; do
+    if ! kill -0 "$runner_pid" 2>/dev/null; then
+        python3 "$ROOT/scripts/manifest.py" "$manifest" fail "runner process $runner_pid exited before completing"
+        printf '%s\n' 'failed' > "$terminal"
+        exit 1
+    fi
+    if [[ -r "$heartbeat" ]]; then
+        read -r last < "$heartbeat" || last=0
+        now=$(date +'%s')
+        if [[ $last =~ ^[0-9]+$ ]] && (( now - last > 300 )); then
+            python3 "$ROOT/scripts/manifest.py" "$manifest" fail "runner heartbeat was stale for more than 300 seconds"
+            kill -TERM "$runner_pid" 2>/dev/null || true
+            printf '%s\n' 'failed' > "$terminal"
+            exit 1
+        fi
+    fi
+    sleep 60
+done
