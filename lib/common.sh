@@ -111,3 +111,39 @@ spr_nice_prefix() {
         command -v ionice >/dev/null 2>&1 && SPR_NICE+=(ionice -c 3)
     fi
 }
+
+spr_discover_nginx_access_logs() {
+    {
+        if command -v nginx >/dev/null 2>&1; then
+            nginx -T 2>&1 | awk '
+                /^[[:space:]]*access_log[[:space:]]+/ {
+                    value=$2
+                    gsub(/[;"\047]/, "", value)
+                    if (value ~ /^\// && value != "/dev/null") print value
+                }
+            ' || true
+        fi
+        if [[ -d /var/log/nginx ]]; then
+            find /var/log/nginx -maxdepth 2 \( -type f -o -type l \) \
+                \( -name '*access*.log' -o -name 'access.log' \) -print 2>/dev/null || true
+        fi
+    } | awk 'NF && !seen[$0]++' | sort
+}
+
+spr_discover_nginx_error_logs() {
+    {
+        if command -v nginx >/dev/null 2>&1; then
+            nginx -T 2>&1 | awk '
+                /^[[:space:]]*error_log[[:space:]]+/ {
+                    value=$2
+                    gsub(/[;"\047]/, "", value)
+                    if (value ~ /^\// && value != "/dev/null") print value
+                }
+            ' || true
+        fi
+        if [[ -d /var/log/nginx ]]; then
+            find /var/log/nginx -maxdepth 2 \( -type f -o -type l \) \
+                \( -name '*error*.log' -o -name 'error.log' \) -print 2>/dev/null || true
+        fi
+    } | awk 'NF && !seen[$0]++' | sort
+}

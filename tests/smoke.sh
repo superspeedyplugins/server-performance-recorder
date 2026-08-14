@@ -19,7 +19,7 @@ SAMPLE_INTERVAL_SECONDS=10
 OUTPUT_ROOT=$workspace/runs
 DISK_DEVICES=$disk_device
 LOW_PRIORITY=1
-NGINX_LOG_PATH=
+NGINX_LOG_PATH=$workspace/access.log
 EOF
 
 output=$("$ROOT/record" launch "$config")
@@ -27,7 +27,29 @@ run=$(printf '%s\n' "$output" | awk '/^Launched:/ {print $2}')
 [[ -n "$run" && -d "$run" ]]
 "$ROOT/record" wait "$run"
 "$ROOT/record" validate "$run"
-"$ROOT/collect" "$config"
+
+python3 - "$run" "$workspace/access.log" <<'PY'
+import gzip, json, sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+run = Path(sys.argv[1])
+log = Path(sys.argv[2])
+manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
+start = int(manifest["timestamps"]["start_epoch"])
+
+def line(offset, status="-"):
+    stamp = datetime.fromtimestamp(start + offset, timezone.utc).strftime("%d/%b/%Y:%H:%M:%S %z")
+    return f'127.0.0.1 - - [{stamp}] "GET /test-{offset}/ HTTP/1.1" 200 123 "-" "smoke" {status}\n'
+
+log.write_text(line(0, "HIT") + line(10, "MISS") + line(15, "BYPASS") + line(16), encoding="utf-8")
+with gzip.open(str(log) + ".1.gz", "wt", encoding="utf-8") as target:
+    target.write(line(5, "HIT"))
+    target.write(line(20, "STALE"))
+    target.write(line(-60, "HIT"))
+PY
+
+"$ROOT/collect" --analyse-nginx --config "$config"
 
 python3 - "$run" <<'PY'
 import csv, json, sys
@@ -49,8 +71,18 @@ assert manifest["status"] == "validated", manifest
 assert (run / "SHA256SUMS").stat().st_size > 0
 assert Path(f"{run}.tar.gz").stat().st_size > 0
 assert (run / "runtime/bin/recorder-runner").is_file()
+nginx = json.loads((run / "analysis/nginx-summary.json").read_text(encoding="utf-8"))
+assert nginx["lines"]["classified_in_window"] == 5, nginx
+assert nginx["statuses"]["HIT"]["count"] == 2, nginx
+assert nginx["statuses"]["MISS"]["count"] == 1, nginx
+assert nginx["statuses"]["BYPASS"]["count"] == 1, nginx
+assert nginx["statuses"]["STALE"]["count"] == 1, nginx
+assert nginx["ratios"]["hit_percent"] == 40.0, nginx
+assert nginx["ratios"]["cache_served_percent"] == 60.0, nginx
+assert "analysis/nginx-summary.json" in (run / "SHA256SUMS").read_text(encoding="utf-8")
 print(f"PASS: {len(rows)} samples at {epochs}")
 print(f"PASS: recorder CPU average {summary['recorder_impact']['cpu_percent']['average']}%")
 print(f"PASS: recorder RSS average {summary['recorder_impact']['rss_mib']['average']} MiB")
 print(f"PASS: evidence bundle {run}")
+print("PASS: Nginx access-log rotations analysed for the exact run window")
 PY

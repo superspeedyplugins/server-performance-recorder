@@ -53,10 +53,24 @@ Accept the default to launch immediately. The recorder detaches from the termina
 Then run:
 
 ```bash
-./collect
+./collect --analyse-nginx
 ```
 
-`./collect` finds the remembered run, verifies it and creates a `.tar.gz` evidence archive ready to download. It leaves the uncompressed run directory intact.
+`./collect --analyse-nginx` finds the remembered run, reads the selected access log and its rotations for the exact recording window, then creates a `.tar.gz` evidence archive ready to download. It leaves the uncompressed run directory and the original Nginx logs intact. Use plain `./collect` if you only want the server recording.
+
+To list the access and error logs the recorder can detect:
+
+```bash
+./record nginx-logs
+```
+
+If setup did not store the right access log, specify it when collecting:
+
+```bash
+./collect --analyse-nginx --nginx-log /var/log/nginx/example.com.access.log
+```
+
+The access-log format must include `$upstream_cache_status`. Standard combined logs usually do not, so finding a log file does not guarantee that cache HIT, MISS and BYPASS ratios can be calculated. The recorder reports this clearly and never changes Nginx configuration.
 
 ## Checking progress
 
@@ -106,11 +120,13 @@ Each run contains a snapshot of the exact recorder runtime it started with. Pull
 
 The recorded CPU, RAM, load, disk and network measurements cover the whole server. They do not pretend to isolate one website. Record the number of hosted sites during setup so reports can say, for example, that the changed site was one of ten sites sharing the measured server.
 
-Existing access logs can later provide site-specific request and cache HIT, MISS and BYPASS counts for the exact epoch window recorded in `run.json`. The recorder stores the intended Nginx log path as provenance but does not read that log while recording.
+Existing access logs can later provide site-specific request and cache HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED counts for the exact epoch window recorded in `run.json`. The recorder stores the intended Nginx log path as provenance but does not read that log while recording. Analysis happens only when `collect --analyse-nginx` is run, at low CPU and I/O priority, and the raw logs are not copied into the evidence bundle.
 
 See the [data contract](docs/data-contract.md) for every raw field and unit.
 
 For the full server installation walkthrough, including why GitHub's SSH clone URL requires a key even for a public repository, see [Install and run Server Performance Recorder](.kb/install-and-run.md).
+
+For log discovery, rotations, cache-ratio definitions and command options, see [Analyse Nginx cache outcomes](.kb/analyse-nginx-cache.md).
 
 ## Tests
 
@@ -124,5 +140,6 @@ Run the Linux tests from a suitable Linux host or container:
 
 ```bash
 ./tests/setup-smoke.sh
+./tests/nginx-discovery-smoke.sh
 ./tests/smoke.sh
 ```

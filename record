@@ -15,7 +15,8 @@ Usage:
   record setup [CONFIG]
   record check CONFIG
   record launch CONFIG
-  record collect [CONFIG]
+  record collect [--analyse-nginx] [--nginx-log PATH] [--host HOST] [--config CONFIG]
+  record nginx-logs
   record status RUN_DIR
   record wait RUN_DIR
   record stop RUN_DIR
@@ -113,7 +114,27 @@ setup_interactive() {
     ask 'Block devices to record' auto
     local disk_devices=$REPLY
 
-    ask 'Existing site-specific Nginx access-log path (optional)' ''
+    local detected_nginx=()
+    mapfile -t detected_nginx < <(spr_discover_nginx_access_logs)
+    local suggested_nginx=''
+    if (( ${#detected_nginx[@]} > 0 )); then
+        printf '\nDetected Nginx access logs:\n'
+        local candidate
+        local readable_nginx=()
+        for candidate in "${detected_nginx[@]}"; do
+            if [[ -r "$candidate" ]]; then
+                printf '  %s\n' "$candidate"
+                readable_nginx+=("$candidate")
+            else
+                printf '  %s (not readable by this user)\n' "$candidate"
+            fi
+        done
+        (( ${#readable_nginx[@]} == 1 )) && suggested_nginx=${readable_nginx[0]}
+        printf 'The selected access-log format must contain $upstream_cache_status for cache-ratio analysis.\n'
+    else
+        printf '\nNo Nginx access logs were detected automatically. You can enter one manually.\n'
+    fi
+    ask 'Existing site-specific Nginx access-log path (optional)' "$suggested_nginx"
     local nginx_log_path=$REPLY
     local default_output="${XDG_STATE_HOME:-$HOME/.local/state}/server-performance-recorder/runs"
     ask 'Evidence output directory' "$default_output"
@@ -261,9 +282,37 @@ case "$command" in
         printf '\nLaunched: %s\nRunner PID: %s\nWatchdog PID: %s\n\n' "$run_dir" "$runner_pid" "$watchdog_pid"
         printf 'Check it with:\n  %q status %q\n' "$0" "$run_dir"
         ;;
+    nginx-logs)
+        [[ $# == 1 ]] || { usage; exit 2; }
+        printf 'Detected Nginx access logs:\n'
+        access_logs=$(spr_discover_nginx_access_logs)
+        [[ -n "$access_logs" ]] && printf '%s\n' "$access_logs" || printf '  none found\n'
+        printf '\nDetected Nginx error logs:\n'
+        error_logs=$(spr_discover_nginx_error_logs)
+        [[ -n "$error_logs" ]] && printf '%s\n' "$error_logs" || printf '  none found\n'
+        ;;
     collect)
-        [[ $# -le 2 ]] || { usage; exit 2; }
-        config=${2:-$DEFAULT_CONFIG}
+        shift
+        config=$DEFAULT_CONFIG
+        analyse_nginx=0
+        nginx_log_override=''
+        nginx_host=''
+        positional_config=0
+        while (( $# )); do
+            case "$1" in
+                --analyse-nginx) analyse_nginx=1; shift ;;
+                --nginx-log) [[ $# -ge 2 ]] || spr_die '--nginx-log needs a path'; nginx_log_override=$2; shift 2 ;;
+                --host) [[ $# -ge 2 ]] || spr_die '--host needs a hostname'; nginx_host=$2; shift 2 ;;
+                --config) [[ $# -ge 2 ]] || spr_die '--config needs a path'; config=$2; shift 2 ;;
+                -*) spr_die "Unknown collect option: $1" ;;
+                *)
+                    (( positional_config == 0 )) || spr_die 'Only one positional config path is allowed'
+                    config=$1
+                    positional_config=1
+                    shift
+                    ;;
+            esac
+        done
         spr_load_config "$config"
         pointer="$OUTPUT_ROOT/.last-run"
         [[ -r "$pointer" ]] || spr_die "No remembered run for this config: $pointer"
@@ -279,8 +328,35 @@ case "$command" in
         else
             spr_warn "Packaging an incomplete run with status: $status"
         fi
+        if (( analyse_nginx )); then
+            nginx_log=${nginx_log_override:-$NGINX_LOG_PATH}
+            if [[ -z "$nginx_log" ]]; then
+                mapfile -t detected_nginx < <(spr_discover_nginx_access_logs)
+                if (( ${#detected_nginx[@]} == 1 )); then
+                    nginx_log=${detected_nginx[0]}
+                    printf 'Using detected Nginx access log: %s\n' "$nginx_log"
+                else
+                    printf 'Detected Nginx access logs:\n'
+                    if (( ${#detected_nginx[@]} )); then printf '  %s\n' "${detected_nginx[@]}"; else printf '  none found\n'; fi
+                    if [[ -t 0 ]]; then
+                        ask_required 'Nginx access-log path to analyse' ''
+                        nginx_log=$REPLY
+                    else
+                        spr_die 'Select a log with --nginx-log PATH'
+                    fi
+                fi
+            fi
+            [[ -r "$nginx_log" ]] || spr_die "Cannot read Nginx access log: $nginx_log"
+            analyser=(python3 "$ROOT/scripts/analyse-nginx.py" --run-dir "$run_dir" --log "$nginx_log")
+            [[ -z "$nginx_host" ]] || analyser+=(--host "$nginx_host")
+            spr_nice_prefix
+            "${SPR_NICE[@]}" "${analyser[@]}"
+            "${SPR_NICE[@]}" python3 "$ROOT/scripts/summarise.py" "$run_dir"
+            "${SPR_NICE[@]}" python3 "$ROOT/scripts/checksums.py" "$run_dir"
+            "$0" validate "$run_dir"
+        fi
         archive="${run_dir}.tar.gz"
-        if [[ ! -f "$archive" ]]; then
+        if [[ ! -f "$archive" || $analyse_nginx == 1 ]]; then
             command -v tar >/dev/null 2>&1 || spr_die 'tar is required to package the evidence bundle'
             spr_nice_prefix
             "${SPR_NICE[@]}" tar -C "$(dirname -- "$run_dir")" -czf "$archive" "$(basename -- "$run_dir")"

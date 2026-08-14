@@ -49,6 +49,8 @@ Every launch creates a new directory and refuses to overwrite an old one. The im
 - `inventory/start.txt` and `inventory/end.txt`: host/filesystem/software context
 - `summary.json`: small integrity and descriptive-statistics summary, not a presentation format
 - `report.md`: human-readable spot check
+- `analysis/nginx-summary.json`: optional machine-readable cache counts and ratios
+- `analysis/nginx-report.md`: optional human-readable cache report
 - `validation.txt`: coverage and safety-floor validation
 - `SHA256SUMS`: evidence integrity inventory
 
@@ -56,6 +58,8 @@ The original shell config is never copied into the evidence bundle.
 
 ## Later Nginx analysis
 
-For site-specific attribution, the access-log format needs at least timestamp, host, request, status, request time and the relevant cache status, such as `$upstream_cache_status`, `$sent_http_cf_cache_status` or the cache plugin's equivalent. If the server uses a combined access log, `$host` is essential. Preserve every rotated and gzipped log that overlaps the `start_epoch` to `end_epoch` window.
+For cache analysis, the access-log format needs a parseable timestamp and `$upstream_cache_status`. If the server uses a shared access log, its format must also include `$host` for `--host` filtering. Preserve every rotated and gzipped log that overlaps the `start_epoch` to `end_epoch` window.
 
-The future analyser should classify cache outcomes explicitly rather than infer them from TTFB. HITs are pages served from cache. MISS, BYPASS, EXPIRED and similar upstream-generating outcomes must remain separate categories. The recorder does not prescribe the chart or reporting system.
+`collect --analyse-nginx` streams the selected log and normal rotations, filters rows to the exact recorder window and keeps HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED separate. Its denominator is requests in the window containing exactly one recognised cache status. Lines without a recognised status are reported as unclassified and are not silently treated as misses.
+
+The derived report also provides a cache-served ratio combining HIT, STALE, UPDATING and REVALIDATED. Raw logs remain outside the evidence bundle. The recorder does not prescribe the later chart or client-reporting system.

@@ -60,10 +60,19 @@ Reconnect to the server and run:
 
 ```bash
 cd server-performance-recorder
-./collect
+git pull
+./collect --analyse-nginx
 ```
 
-This finds the remembered run, verifies it and creates a `.tar.gz` archive ready to download. The original evidence directory remains intact.
+This finds the remembered run, analyses the selected Nginx access log and its rotations for the same time window, verifies the evidence and creates a `.tar.gz` archive ready to download. The original evidence directory and Nginx logs remain intact.
+
+If setup did not store an access-log path, the collector lists the paths it can detect. When there is more than one, it asks which one to use. You can also specify it directly:
+
+```bash
+./collect --analyse-nginx --nginx-log /var/log/nginx/example.com.access.log
+```
+
+The access-log format needs to contain `$upstream_cache_status` for the cache-ratio report. If it does not, the server recording is still valid, but HIT, MISS and BYPASS cannot be recovered from that log after the fact.
 
 If you want to check progress before the recording finishes, use the exact run directory printed by setup:
 
