@@ -110,6 +110,8 @@ Existing access logs can later provide site-specific request and cache HIT, MISS
 
 See the [data contract](docs/data-contract.md) for every raw field and unit.
 
+For the full server installation walkthrough, including why GitHub's SSH clone URL requires a key even for a public repository, see [Install and run Server Performance Recorder](.kb/install-and-run.md).
+
 ## Tests
 
 The test suite includes:
