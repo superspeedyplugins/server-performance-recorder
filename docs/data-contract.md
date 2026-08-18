@@ -64,6 +64,8 @@ The analyser accepts standard combined logs from Nginx, Apache, OpenLiteSpeed an
 
 `collect --analyse-access-log` streams the selected log and normal rotations, filters rows to the exact recorder window, then counts requests, methods and HTTP response statuses. RunCloud's dot- and date-suffixed compressed rotations are included.
 
+`collect --analyse-access-log --dry-run` reads file metadata only. It lists the ordered files, on-disk sizes and input ceiling without reading log contents or creating analysis/archive output. The real analyser reports file and line progress to standard error. `--max-input-bytes` applies to on-disk bytes, so a compressed rotation counts at its compressed size; reaching the ceiling marks the result incomplete.
+
 When the log format includes a recognised cache-status field, the analyser keeps HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED separate. The cache-ratio denominator is requests in the window containing exactly one recognised cache status. A standard combined log without cache status still produces valid request and HTTP response counts; missing cache data is never treated as a miss.
 
 The derived report also provides a cache-served ratio combining HIT, STALE, UPDATING and REVALIDATED. Raw logs remain outside the evidence bundle. The recorder does not prescribe the later chart or client-reporting system.

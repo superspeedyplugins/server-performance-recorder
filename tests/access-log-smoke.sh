@@ -17,6 +17,23 @@ cat > "$run/run.json" <<'EOF'
 }
 EOF
 
+dry_run="$workspace/dry-run"
+dry_log="$workspace/dry_access.log"
+mkdir -p "$dry_run"
+cp "$run/run.json" "$dry_run/run.json"
+printf '%s\n' 'dry run must not read this line' > "$dry_log"
+chmod 000 "$dry_log"
+dry_output=$(python3 "$ROOT/scripts/analyse-access-log.py" \
+    --run-dir "$dry_run" --log "$dry_log" --server nginx --dry-run)
+chmod 600 "$dry_log"
+grep -Fq 'Dry run: no log contents were read' <<<"$dry_output"
+grep -Fq "$dry_log" <<<"$dry_output"
+[[ ! -e "$dry_run/analysis" ]]
+limited_output=$(python3 "$ROOT/scripts/analyse-access-log.py" \
+    --run-dir "$dry_run" --log "$dry_log" --server nginx --dry-run --max-input-bytes 1)
+grep -Fq 'SKIP (over ceiling)' <<<"$limited_output"
+grep -Fq 'Selected input: 0 B (0 bytes) across 0 file(s)' <<<"$limited_output"
+
 for server in nginx apache openlitespeed litespeed; do
     log="$workspace/${server}_access.log"
     printf '%s\n' \
@@ -56,4 +73,5 @@ PY
 
 printf 'PASS: Nginx, Apache, OpenLiteSpeed and LiteSpeed combined logs are analysed\n'
 printf 'PASS: RunCloud date-suffixed gzip rotations are included\n'
+printf 'PASS: dry run reads metadata only and honours the input ceiling\n'
 printf 'PASS: evidence ZIP is valid and contains the run directory\n'

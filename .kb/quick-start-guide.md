@@ -75,6 +75,18 @@ The completed status is `validated`.
 ./collect --analyse-access-log
 ```
 
+## Preview access-log work without reading logs or writing files
+
+```bash
+./collect --analyse-access-log --dry-run
+```
+
+## Limit access-log input to 2 GiB
+
+```bash
+./collect --analyse-access-log --max-input-bytes 2147483648
+```
+
 ## Use a specific access log
 
 ```bash

@@ -66,6 +66,12 @@ git pull
 
 This finds the remembered run, analyses the selected Nginx, Apache or LiteSpeed access log and its rotations for the same time window, verifies the evidence and refreshes the download-ready `.zip`. The original evidence directory and web-server logs remain intact.
 
+Preview the selected logs and their on-disk size without reading their contents or changing the evidence:
+
+```bash
+./collect --analyse-access-log --dry-run
+```
+
 Setup checks RunCloud's `~/logs/nginx`, `~/logs/apache2` and `~/logs` layouts as well as common system locations. If it did not store an access-log path, the collector lists the paths it can detect. When there is more than one, it asks which one to use. You can also specify it directly:
 
 ```bash

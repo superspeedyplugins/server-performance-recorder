@@ -6,6 +6,8 @@ import argparse
 import gzip
 import json
 import re
+import sys
+import time
 from collections import Counter
 from datetime import datetime
 from pathlib import Path
@@ -108,7 +110,25 @@ def host_matches(line: str, payload: dict[str, Any] | None, wanted: str) -> bool
     return re.search(r"(?<![a-z0-9.-])" + re.escape(wanted) + r"(?![a-z0-9.-])", line.lower()) is not None
 
 
+def rotation_sort_key(base: Path, path: Path) -> tuple[int, int | float, str]:
+    if path == base:
+        return (0, 0, path.name)
+    suffix = path.name[len(base.name):]
+    numbered = re.fullmatch(r"\.(\d+)(?:\.gz)?", suffix)
+    if numbered:
+        return (1, int(numbered.group(1)), path.name)
+    dated = re.match(r"-(\d{8,14})", suffix)
+    if dated:
+        return (2, -int(dated.group(1)), path.name)
+    try:
+        modified = path.stat().st_mtime
+    except OSError:
+        modified = 0
+    return (3, -modified, path.name)
+
+
 def rotated_files(base: Path) -> list[Path]:
+    base = base.resolve()
     candidates = [base]
     if base.parent.is_dir():
         candidates.extend(base.parent.glob(base.name + ".*"))
@@ -120,7 +140,7 @@ def rotated_files(base: Path) -> list[Path]:
                 unique[str(path.resolve())] = path.resolve()
         except OSError:
             continue
-    return sorted(unique.values(), key=lambda item: item.name)
+    return sorted(unique.values(), key=lambda item: rotation_sort_key(base, item))
 
 
 def open_log(path: Path):
@@ -137,6 +157,50 @@ def display(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.2f}%"
 
 
+def display_bytes(value: int) -> str:
+    amount = float(value)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if amount < 1024 or unit == "TiB":
+            return f"{amount:.0f} {unit}" if unit == "B" else f"{amount:.2f} {unit}"
+        amount /= 1024
+    return f"{value} B"
+
+
+def input_plan(files: Iterable[Path], ceiling: int) -> tuple[list[tuple[Path, int]], list[tuple[Path, int]]]:
+    selected: list[tuple[Path, int]] = []
+    skipped: list[tuple[Path, int]] = []
+    used = 0
+    over_limit = False
+    for path in files:
+        size = path.stat().st_size
+        if over_limit or used + size > ceiling:
+            over_limit = True
+            skipped.append((path, size))
+        else:
+            selected.append((path, size))
+            used += size
+    return selected, skipped
+
+
+def print_dry_run(start: int, end: int, selected: list[tuple[Path, int]], skipped: list[tuple[Path, int]], ceiling: int) -> None:
+    total = sum(size for _, size in selected)
+    print("# Access-log analysis dry run")
+    print(f"Recorder window: {start} to {end}, inclusive")
+    print(f"On-disk input ceiling: {display_bytes(ceiling)} ({ceiling:,} bytes)")
+    print(f"Selected input: {display_bytes(total)} ({total:,} bytes) across {len(selected)} file(s)")
+    print("Raw log data copied or extracted: 0 B")
+    print(f"Compressed files to stream: {sum(path.suffix == '.gz' for path, _ in selected)}")
+    print("Compressed size does not predict decompressed line count or scan time.")
+    print()
+    print("Selection\tOn-disk size\tPath")
+    for path, size in selected:
+        print(f"READ\t{display_bytes(size)}\t{path}")
+    for path, size in skipped:
+        print(f"SKIP (over ceiling)\t{display_bytes(size)}\t{path}")
+    print()
+    print("Dry run: no log contents were read and no analysis or archive files were created.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Analyse web-server access logs for one recorder window")
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -144,7 +208,13 @@ def main() -> int:
     parser.add_argument("--host", default="")
     parser.add_argument("--server", default="unknown")
     parser.add_argument("--max-input-bytes", type=int, default=20 * 1024 * 1024 * 1024)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--progress-interval-seconds", type=int, default=10)
     args = parser.parse_args()
+    if args.max_input_bytes <= 0:
+        parser.error("--max-input-bytes must be positive")
+    if args.progress_interval_seconds <= 0:
+        parser.error("--progress-interval-seconds must be positive")
 
     run = args.run_dir.resolve()
     manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
@@ -158,6 +228,12 @@ def main() -> int:
             files[str(path)] = path
     if not files:
         raise SystemExit("No readable access logs or rotations were found")
+    selected_files, skipped_files = input_plan(files.values(), args.max_input_bytes)
+    if args.dry_run:
+        print_dry_run(start, end, selected_files, skipped_files, args.max_input_bytes)
+        return 0
+    if not selected_files:
+        raise SystemExit("The first access log exceeds --max-input-bytes; no log contents were read")
 
     cache_statuses: Counter[str] = Counter()
     response_statuses: Counter[int] = Counter()
@@ -166,21 +242,37 @@ def main() -> int:
     bytes_considered = 0
     analysed_files: list[dict[str, Any]] = []
     warnings: list[str] = []
-    complete = True
+    complete = not skipped_files
+    if skipped_files:
+        first_skipped, _ = skipped_files[0]
+        warnings.append(f"Input limit reached before {first_skipped}; increase --max-input-bytes to include it")
 
-    for path in files.values():
-        size = path.stat().st_size
-        if bytes_considered + size > args.max_input_bytes:
-            complete = False
-            warnings.append(f"Input limit reached before {path}; increase --max-input-bytes to include it")
-            break
+    scan_started = time.monotonic()
+    next_progress = scan_started + args.progress_interval_seconds
+    for file_number, (path, size) in enumerate(selected_files, 1):
         bytes_considered += size
         file_lines = 0
+        file_started = time.monotonic()
+        print(
+            f"Scanning {file_number}/{len(selected_files)}: {path} ({display_bytes(size)} on disk)",
+            file=sys.stderr,
+            flush=True,
+        )
         try:
             with open_log(path) as source:
                 for line in source:
                     scanned += 1
                     file_lines += 1
+                    if scanned % 100_000 == 0 and time.monotonic() >= next_progress:
+                        now = time.monotonic()
+                        elapsed = max(now - scan_started, 0.001)
+                        print(
+                            f"Progress: {scanned:,} lines scanned; {in_window:,} requests in window; "
+                            f"{scanned / elapsed:,.0f} lines/s",
+                            file=sys.stderr,
+                            flush=True,
+                        )
+                        next_progress = now + args.progress_interval_seconds
                     epoch, found_cache, payload, http_status, method = parse_line(line)
                     if epoch is None:
                         unparsed_time += 1
@@ -203,6 +295,11 @@ def main() -> int:
             complete = False
             warnings.append(f"Could not finish {path}: {exc}")
         analysed_files.append({"path": str(path), "bytes": size, "lines_scanned": file_lines})
+        print(
+            f"Finished {path}: {file_lines:,} lines in {time.monotonic() - file_started:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
 
     classified_cache = sum(cache_statuses.values())
     if classified_cache == 0:

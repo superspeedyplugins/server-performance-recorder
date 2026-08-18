@@ -15,7 +15,8 @@ Usage:
   record setup [CONFIG]
   record check CONFIG
   record launch CONFIG
-  record collect [--analyse-access-log] [--access-log PATH] [--host HOST] [--config CONFIG]
+  record collect [--analyse-access-log] [--dry-run] [--max-input-bytes BYTES]
+                 [--access-log PATH] [--host HOST] [--config CONFIG]
   record web-logs
   record status RUN_DIR
   record wait RUN_DIR
@@ -316,12 +317,22 @@ case "$command" in
         shift
         config=$DEFAULT_CONFIG
         analyse_access_log=0
+        analysis_dry_run=0
+        max_input_bytes=''
         access_log_override=''
         access_host=''
         positional_config=0
         while (( $# )); do
             case "$1" in
                 --analyse-access-log|--analyse-nginx) analyse_access_log=1; shift ;;
+                --dry-run) analyse_access_log=1; analysis_dry_run=1; shift ;;
+                --max-input-bytes)
+                    [[ $# -ge 2 ]] || spr_die '--max-input-bytes needs a positive integer'
+                    [[ "$2" =~ ^[1-9][0-9]*$ ]] || spr_die '--max-input-bytes needs a positive integer'
+                    analyse_access_log=1
+                    max_input_bytes=$2
+                    shift 2
+                    ;;
                 --access-log|--nginx-log) [[ $# -ge 2 ]] || spr_die "$1 needs a path"; access_log_override=$2; shift 2 ;;
                 --host) [[ $# -ge 2 ]] || spr_die '--host needs a hostname'; access_host=$2; shift 2 ;;
                 --config) [[ $# -ge 2 ]] || spr_die '--config needs a path'; config=$2; shift 2 ;;
@@ -372,8 +383,11 @@ case "$command" in
             analysis_server=$(spr_infer_web_server_from_log "$access_log" "$WEB_SERVER_TYPE")
             analyser=(python3 "$ROOT/scripts/analyse-access-log.py" --run-dir "$run_dir" --log "$access_log" --server "$analysis_server")
             [[ -z "$access_host" ]] || analyser+=(--host "$access_host")
+            [[ -z "$max_input_bytes" ]] || analyser+=(--max-input-bytes "$max_input_bytes")
+            (( analysis_dry_run == 0 )) || analyser+=(--dry-run)
             spr_nice_prefix
             "${SPR_NICE[@]}" "${analyser[@]}"
+            (( analysis_dry_run == 0 )) || exit 0
             "${SPR_NICE[@]}" python3 "$ROOT/scripts/summarise.py" "$run_dir"
             "${SPR_NICE[@]}" python3 "$ROOT/scripts/checksums.py" "$run_dir"
             "$0" validate "$run_dir"

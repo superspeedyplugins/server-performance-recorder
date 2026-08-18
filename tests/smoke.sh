@@ -50,6 +50,13 @@ with gzip.open(str(log) + ".1.gz", "wt", encoding="utf-8") as target:
     target.write(line(-60, "HIT"))
 PY
 
+archive_before=$(sha256sum "$run.zip" | awk '{print $1}')
+dry_output=$("$ROOT/collect" --analyse-access-log --dry-run --config "$config")
+grep -Fq 'Dry run: no log contents were read' <<<"$dry_output"
+[[ ! -e "$run/analysis" ]]
+archive_after=$(sha256sum "$run.zip" | awk '{print $1}')
+[[ "$archive_before" == "$archive_after" ]]
+
 "$ROOT/collect" --analyse-access-log --config "$config"
 
 python3 - "$run" <<'PY'
@@ -92,5 +99,6 @@ print(f"PASS: recorder CPU average {summary['recorder_impact']['cpu_percent']['a
 print(f"PASS: recorder RSS average {summary['recorder_impact']['rss_mib']['average']} MiB")
 print(f"PASS: evidence bundle {run}")
 print(f"PASS: automatic download archive {archive}")
+print("PASS: collect dry run did not modify analysis or archive output")
 print("PASS: access-log rotations analysed for the exact run window")
 PY

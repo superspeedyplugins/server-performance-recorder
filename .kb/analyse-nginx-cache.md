@@ -24,11 +24,25 @@ Cache analysis needs cache outcomes to be included in the configured log format.
 
 ## Collect and analyse
 
+Preview the exact files and on-disk input size without reading log contents or writing analysis files:
+
+```bash
+./collect --analyse-access-log --dry-run
+```
+
 After the recording reaches a terminal state, run:
 
 ```bash
 ./collect --analyse-access-log
 ```
+
+The real analysis prints the current file, lines scanned, requests found in the recorder window and lines per second. Limit the on-disk input when a server retains more history than you want to scan:
+
+```bash
+./collect --analyse-access-log --max-input-bytes 2147483648
+```
+
+The example ceiling is 2 GiB. Compressed logs count at their compressed on-disk size. Reaching the ceiling produces an explicitly incomplete analysis rather than silently presenting it as complete.
 
 To override the stored path:
 

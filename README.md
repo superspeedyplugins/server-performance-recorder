@@ -58,6 +58,14 @@ Then run:
 
 `./collect --analyse-access-log` finds the remembered run, reads the selected access log and its rotations for the exact recording window, then refreshes the `.zip` so it includes the added analysis. It leaves the uncompressed run directory and original logs intact. Plain `./collect` creates the ZIP on demand for recordings made with an older recorder version.
 
+Preview the exact input without reading log contents or writing analysis/archive output:
+
+```bash
+./collect --analyse-access-log --dry-run
+```
+
+The preview reports every selected rotation, its compressed on-disk size and the input ceiling. Real analysis streams compressed logs without extracting or copying them and prints file/line progress to the terminal. Use `--max-input-bytes 2147483648` to impose a 2 GiB on-disk ceiling; a limited result is marked incomplete.
+
 To list the access and error logs the recorder can detect:
 
 ```bash
