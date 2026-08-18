@@ -66,6 +66,12 @@ Preview the exact input without reading log contents or writing analysis/archive
 
 The preview reports every selected rotation, rotations skipped as outside the recorder window, compressed on-disk sizes and the input ceiling. Date-suffixed RunCloud rotations are treated as rotation boundaries, so a completed four-hour window does not scan days of unrelated history. Real analysis streams compressed logs without extracting or copying them and prints file/line progress to the terminal. Use `--max-input-bytes 2147483648` to impose a 2 GiB on-disk ceiling; a limited result is marked incomplete.
 
+For a historical backfill which must not alter the original run directory or ZIP, write a separate derived evidence directory:
+
+```bash
+./collect --analyse-access-log --derived-output "$RUN-derived-access-analysis"
+```
+
 To list the access and error logs the recorder can detect:
 
 ```bash
@@ -78,7 +84,7 @@ If setup did not store the right access log, specify it when collecting:
 ./collect --analyse-access-log --access-log /var/log/nginx/example.com.access.log
 ```
 
-Nginx, Apache, OpenLiteSpeed and LiteSpeed Enterprise standard combined logs all provide request and HTTP response-status counts. Cache HIT, MISS and BYPASS ratios are also reported when the configured log format contains recognisable cache-status values. The recorder reports missing cache fields clearly and never changes web-server configuration.
+Nginx, Apache, OpenLiteSpeed and LiteSpeed Enterprise standard combined logs all provide request and HTTP response-status counts. The analysis also reports claimed search/shopping/generic crawlers versus traffic not identified as automation, plus heuristic WordPress/WooCommerce request classes. "Not identified as automation" does not mean human. Cache HIT, MISS and BYPASS ratios and request/upstream timing averages and p95s are reported when those fields exist. Missing fields remain unavailable rather than becoming zero. Cloudflare edge hits require a matching Cloudflare analytics export. The recorder never changes web-server configuration.
 
 RunCloud owner-account layouts are detected without root access:
 

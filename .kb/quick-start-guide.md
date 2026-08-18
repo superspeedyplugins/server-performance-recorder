@@ -95,6 +95,14 @@ Check the `READ` rows. Date-suffixed RunCloud rotations outside the recorder win
 ./collect --analyse-access-log --access-log /path/to/site_access.log
 ```
 
+## Backfill retained logs without changing the original run or ZIP
+
+```bash
+./collect --analyse-access-log --derived-output "$RUN-derived-access-analysis"
+```
+
+Download the derived directory separately. The original run directory and ZIP are unchanged.
+
 ## Filter a shared access log to one hostname
 
 ```bash

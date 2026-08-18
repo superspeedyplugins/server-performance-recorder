@@ -63,8 +63,8 @@ for server in nginx apache openlitespeed litespeed; do
         '127.0.0.1 - - [18/Aug/2023:12:10:00 +0000] "GET /after HTTP/1.1" 200 123 "-" "fixture" HIT' \
         > "$log"
     printf '%s\n' \
-        '127.0.0.1 - - [17/Aug/2023:12:10:00 +0000] "GET / HTTP/1.1" 200 123 "-" "fixture" HIT' \
-        '127.0.0.1 - - [17/Aug/2023:12:20:00 +0000] "POST /wp-admin/admin-ajax.php HTTP/1.1" 503 12 "-" "fixture" MISS' \
+        '127.0.0.1 - - [17/Aug/2023:12:10:00 +0000] "GET /product-category/wheels/filter_brand/acme/ HTTP/1.1" 200 123 "-" "Mozilla/5.0 (compatible; Googlebot/2.1)" HIT rt=0.200 urt=0.180' \
+        '127.0.0.1 - - [17/Aug/2023:12:20:00 +0000] "POST /wp-admin/admin-ajax.php HTTP/1.1" 503 12 "-" "Mozilla/5.0" MISS rt=0.500 urt=0.450' \
         '127.0.0.1 - - [17/Aug/2023:12:30:00 +0000] "GET /old HTTP/1.1" 404 1 "-" "fixture"' \
         | gzip > "${log}-20230818.gz"
 
@@ -72,14 +72,55 @@ for server in nginx apache openlitespeed litespeed; do
     python3 - "$run/analysis/access-log-summary.json" "$server" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
+encoded = json.dumps(value)
 assert value["web_server"] == sys.argv[2]
 assert value["lines"]["requests_in_window"] == 3, value
 assert value["http_statuses"] == {"200": 1, "404": 1, "503": 1}, value
 assert value["methods"] == {"GET": 2, "POST": 1}, value
 assert value["cache"]["statuses"]["HIT"]["count"] == 1, value
 assert value["cache"]["statuses"]["MISS"]["count"] == 1, value
+assert value["automation"]["classes"]["claimed_search_crawler"]["count"] == 1, value
+assert value["automation"]["classes"]["not_identified_as_automation"]["count"] == 2, value
+assert value["request_classes"]["counts"]["deep_filter"] == 1, value
+assert value["request_classes"]["counts"]["admin_ajax"] == 1, value
+assert value["timings"]["request_time_ms"]["count"] == 2, value
+assert value["timings"]["request_time_ms"]["average"] == 350.0, value
+assert value["timings"]["upstream_response_time_ms"]["p95"] == 450.0, value
+bot_filter = next(item for item in value["request_groups"] if item["automation"] == "claimed_search_crawler" and item["request_class"] == "deep_filter")
+assert bot_filter["requests"] == 1, value
+assert bot_filter["request_time_ms"]["sum"] == 200.0, value
+assert bot_filter["upstream_response_time_ms"]["average"] == 180.0, value
+assert value["archive_protection_proxy"]["claimed_automation_deep_filter_requests"] == 1, value
+assert value["archive_protection_proxy"]["percent_of_claimed_automation_requests"] == 100.0, value
+assert value["archive_protection_proxy"]["request_time_ms"]["sum"] == 200.0, value
+assert "Googlebot" not in encoded and "/product-category/wheels/" not in encoded, value
 PY
 done
+
+missing_log="$workspace/missing_fields_access.log"
+printf '%s\n' \
+    '127.0.0.1 - - [17/Aug/2023:12:10:00 +0000] "GET / HTTP/1.1" 200 123 "-" "Mozilla/5.0"' \
+    > "$missing_log"
+python3 "$ROOT/scripts/analyse-access-log.py" --run-dir "$run" --log "$missing_log" --server nginx >/dev/null
+python3 - "$run/analysis/access-log-summary.json" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding="utf-8"))
+assert value["cache"]["quality"] == "unavailable", value
+assert all(item["count"] is None for item in value["cache"]["statuses"].values()), value
+assert value["timings"]["request_time_ms"]["quality"] == "unavailable", value
+assert value["timings"]["request_time_ms"]["average"] is None, value
+assert value["timings"]["upstream_response_time_ms"]["p95"] is None, value
+PY
+
+derived_run="$workspace/derived-run"
+derived_output="$workspace/derived-evidence"
+mkdir -p "$derived_run"
+cp "$run/run.json" "$derived_run/run.json"
+python3 "$ROOT/scripts/analyse-access-log.py" \
+    --run-dir "$derived_run" --log "$missing_log" --server nginx --output-dir "$derived_output" >/dev/null
+[[ -f "$derived_output/access-log-summary.json" ]]
+[[ -f "$derived_output/access-log-report.md" ]]
+[[ ! -e "$derived_run/analysis" ]]
 
 archive=$(python3 "$ROOT/scripts/archive.py" "$run")
 python3 - "$archive" "$(basename -- "$run")" <<'PY'
@@ -99,4 +140,7 @@ printf 'PASS: Nginx, Apache, OpenLiteSpeed and LiteSpeed combined logs are analy
 printf 'PASS: RunCloud date-suffixed gzip rotations are included\n'
 printf 'PASS: dry run reads metadata only and honours the input ceiling\n'
 printf 'PASS: RunCloud rotations outside the recorder window are skipped\n'
+printf 'PASS: automation, request classes and available timings are aggregated without retaining raw values\n'
+printf 'PASS: missing cache and timing fields remain unavailable rather than zero\n'
+printf 'PASS: derived analysis can be written separately without modifying the original run\n'
 printf 'PASS: evidence ZIP is valid and contains the run directory\n'

@@ -59,6 +59,12 @@ archive_after=$(sha256sum "$run.zip" | awk '{print $1}')
 
 "$ROOT/collect" --analyse-access-log --config "$config"
 
+archive_with_analysis=$(sha256sum "$run.zip" | awk '{print $1}')
+derived="$workspace/derived-access-analysis"
+"$ROOT/collect" --analyse-access-log --derived-output "$derived" --config "$config" >/dev/null
+[[ -f "$derived/access-log-summary.json" && -f "$derived/access-log-report.md" ]]
+[[ "$archive_with_analysis" == $(sha256sum "$run.zip" | awk '{print $1}') ]]
+
 python3 - "$run" <<'PY'
 import csv, json, sys
 from pathlib import Path
@@ -101,4 +107,5 @@ print(f"PASS: evidence bundle {run}")
 print(f"PASS: automatic download archive {archive}")
 print("PASS: collect dry run did not modify analysis or archive output")
 print("PASS: access-log rotations analysed for the exact run window")
+print("PASS: derived access-log analysis left the original run and ZIP unchanged")
 PY
