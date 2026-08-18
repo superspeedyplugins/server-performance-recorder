@@ -16,7 +16,7 @@ def main() -> int:
     args = parser.parse_args()
     env = os.environ
     value = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_label": env.get("RUN_LABEL", "recording"),
         "observed_site": env.get("OBSERVED_SITE", ""),
         "server_site_count": env.get("SERVER_SITE_COUNT", "unknown"),
@@ -26,7 +26,8 @@ def main() -> int:
         "disk_devices": args.disk_devices.split(),
         "clock_ticks": os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else None,
         "page_size_bytes": os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else None,
-        "nginx_log_path": env.get("NGINX_LOG_PATH", ""),
+        "web_server_type": env.get("WEB_SERVER_TYPE", "auto"),
+        "access_log_path": env.get("ACCESS_LOG_PATH", "") or env.get("NGINX_LOG_PATH", ""),
         "low_priority": env.get("LOW_PRIORITY", "1") == "1",
         "secrets_copied": False,
     }

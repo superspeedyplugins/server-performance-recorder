@@ -15,8 +15,8 @@ Usage:
   record setup [CONFIG]
   record check CONFIG
   record launch CONFIG
-  record collect [--analyse-nginx] [--nginx-log PATH] [--host HOST] [--config CONFIG]
-  record nginx-logs
+  record collect [--analyse-access-log] [--access-log PATH] [--host HOST] [--config CONFIG]
+  record web-logs
   record status RUN_DIR
   record wait RUN_DIR
   record stop RUN_DIR
@@ -24,6 +24,7 @@ Usage:
 
 The launch command prints the unique evidence-bundle directory. Keep it: all
 subsequent commands operate on that directory, never on a mutable "latest" run.
+Successful recordings also create a sibling .zip file for download.
 EOF
 }
 
@@ -82,10 +83,10 @@ setup_interactive() {
         ask_yes "Replace existing config $config?" n || { printf 'Kept existing config.\n'; return 0; }
     fi
 
-    printf '\nThis records whole-server impact. It does not generate traffic or copy Nginx logs.\n\n'
+    printf '\nThis records whole-server impact. It does not generate traffic or copy web-server logs.\n\n'
     ask_required 'Run label' before-change
     local run_label=$REPLY
-    ask_required 'Site or workload being measured' ''
+    ask_required 'Site or workload being measured' whole-server
     local observed_site=$REPLY
     while true; do
         ask 'How many websites share this server? Use unknown if not relevant or unsure' unknown
@@ -93,7 +94,12 @@ setup_interactive() {
         [[ "$server_site_count" == unknown || "$server_site_count" =~ ^[0-9]+$ ]] && break
         printf 'Enter a whole number or unknown.\n'
     done
-    local default_note="Whole-server recording while measuring $observed_site."
+    local default_note
+    if [[ "$observed_site" == whole-server ]]; then
+        default_note='Whole-server performance recording.'
+    else
+        default_note="Whole-server recording while measuring $observed_site."
+    fi
     if [[ "$server_site_count" != unknown ]]; then
         default_note+=" The observed site was one of $server_site_count hosted sites."
     fi
@@ -114,28 +120,36 @@ setup_interactive() {
     ask 'Block devices to record' auto
     local disk_devices=$REPLY
 
-    local detected_nginx=()
-    mapfile -t detected_nginx < <(spr_discover_nginx_access_logs)
-    local suggested_nginx=''
-    if (( ${#detected_nginx[@]} > 0 )); then
-        printf '\nDetected Nginx access logs:\n'
+    local detected_server
+    detected_server=$(spr_detect_web_servers)
+    ask 'Web server type (nginx, apache, openlitespeed, litespeed, multiple or unknown)' "$detected_server"
+    local web_server_type=$REPLY
+    [[ "$web_server_type" =~ ^(auto|nginx|apache|openlitespeed|litespeed|unknown|multiple)$ ]] || \
+        spr_die 'Unsupported web server type'
+
+    local detected_logs=()
+    mapfile -t detected_logs < <(spr_discover_access_logs "$web_server_type")
+    local suggested_log
+    suggested_log=$(spr_suggest_access_log "$observed_site" "$web_server_type")
+    if (( ${#detected_logs[@]} > 0 )); then
+        printf '\nDetected access logs:\n'
         local candidate
-        local readable_nginx=()
-        for candidate in "${detected_nginx[@]}"; do
+        for candidate in "${detected_logs[@]}"; do
             if [[ -r "$candidate" ]]; then
                 printf '  %s\n' "$candidate"
-                readable_nginx+=("$candidate")
             else
                 printf '  %s (not readable by this user)\n' "$candidate"
             fi
         done
-        (( ${#readable_nginx[@]} == 1 )) && suggested_nginx=${readable_nginx[0]}
-        printf 'The selected access-log format must contain $upstream_cache_status for cache-ratio analysis.\n'
+        printf 'Request counts work with standard combined logs. Cache ratios require the server cache status to be present in the format.\n'
     else
-        printf '\nNo Nginx access logs were detected automatically. You can enter one manually.\n'
+        printf '\nNo access logs were detected automatically. You can enter one manually.\n'
     fi
-    ask 'Existing site-specific Nginx access-log path (optional)' "$suggested_nginx"
-    local nginx_log_path=$REPLY
+    ask 'Existing site-specific access-log path (optional)' "$suggested_log"
+    local access_log_path=$REPLY
+    if [[ -n "$access_log_path" && "$web_server_type" =~ ^(auto|unknown|multiple)$ ]]; then
+        web_server_type=$(spr_infer_web_server_from_log "$access_log_path" "$web_server_type")
+    fi
     local default_output="${XDG_STATE_HOME:-$HOME/.local/state}/server-performance-recorder/runs"
     ask 'Evidence output directory' "$default_output"
     local output_root=$REPLY
@@ -151,7 +165,8 @@ setup_interactive() {
     write_setting "$temporary" OUTPUT_ROOT "$output_root"
     write_setting "$temporary" DISK_DEVICES "$disk_devices"
     write_setting "$temporary" LOW_PRIORITY 1
-    write_setting "$temporary" NGINX_LOG_PATH "$nginx_log_path"
+    write_setting "$temporary" WEB_SERVER_TYPE "$web_server_type"
+    write_setting "$temporary" ACCESS_LOG_PATH "$access_log_path"
     chmod 600 "$temporary"
     mv -f -- "$temporary" "$config"
 
@@ -215,19 +230,22 @@ check_config() {
     printf 'INFO  %-22s %s\n' hosted_sites "$SERVER_SITE_COUNT"
     printf 'INFO  %-22s %s\n' low_priority "$LOW_PRIORITY"
 
-    if [[ -n "$NGINX_LOG_PATH" ]]; then
-        if [[ -r "$NGINX_LOG_PATH" ]]; then
-            printf 'PASS  %-22s readable: %s\n' nginx_log "$NGINX_LOG_PATH"
-            if tail -n 20 -- "$NGINX_LOG_PATH" 2>/dev/null | grep -Eiq '(^|[^A-Z])(HIT|MISS|BYPASS|EXPIRED|STALE|REVALIDATED)([^A-Z]|$)'; then
-                printf 'PASS  %-22s cache-status tokens found near end of log\n' nginx_cache_status
+    local effective_server=$WEB_SERVER_TYPE
+    [[ "$effective_server" != auto ]] || effective_server=$(spr_detect_web_servers)
+    printf 'INFO  %-22s %s\n' web_server "$effective_server"
+    if [[ -n "$ACCESS_LOG_PATH" ]]; then
+        if [[ -r "$ACCESS_LOG_PATH" ]]; then
+            printf 'PASS  %-22s readable: %s\n' access_log "$ACCESS_LOG_PATH"
+            if tail -n 20 -- "$ACCESS_LOG_PATH" 2>/dev/null | grep -Eiq '(^|[^A-Z])(HIT|MISS|BYPASS|EXPIRED|STALE|UPDATING|REVALIDATED)([^A-Z]|$)'; then
+                printf 'PASS  %-22s cache-status tokens found near end of log\n' cache_status
             else
-                printf 'WARN  %-22s no cache-status tokens found in last 20 lines; verify the format before relying on cache hit/miss analysis\n' nginx_cache_status
+                printf 'INFO  %-22s not found near end of log; request/status analysis remains available\n' cache_status
             fi
         else
-            printf 'WARN  %-22s not readable now: %s\n' nginx_log "$NGINX_LOG_PATH"
+            printf 'WARN  %-22s not readable now: %s\n' access_log "$ACCESS_LOG_PATH"
         fi
     else
-        printf 'WARN  %-22s not recorded; set NGINX_LOG_PATH so the later analysis has provenance\n' nginx_log
+        printf 'WARN  %-22s not recorded; set ACCESS_LOG_PATH for later request analysis\n' access_log
     fi
     (( failures == 0 ))
 }
@@ -281,28 +299,31 @@ case "$command" in
         python3 "$runtime_root/scripts/manifest.py" "$run_dir/run.json" set watchdog.pid="$watchdog_pid" watchdog.enabled=true
         printf '\nLaunched: %s\nRunner PID: %s\nWatchdog PID: %s\n\n' "$run_dir" "$runner_pid" "$watchdog_pid"
         printf 'Check it with:\n  %q status %q\n' "$0" "$run_dir"
+        printf 'When complete, download:\n  %s.zip\n' "$run_dir"
         ;;
-    nginx-logs)
+    web-logs|nginx-logs)
         [[ $# == 1 ]] || { usage; exit 2; }
-        printf 'Detected Nginx access logs:\n'
-        access_logs=$(spr_discover_nginx_access_logs)
+        detected_server=$(spr_detect_web_servers)
+        printf 'Detected web server: %s\n\n' "$detected_server"
+        printf 'Detected access logs:\n'
+        access_logs=$(spr_discover_access_logs all)
         [[ -n "$access_logs" ]] && printf '%s\n' "$access_logs" || printf '  none found\n'
-        printf '\nDetected Nginx error logs:\n'
-        error_logs=$(spr_discover_nginx_error_logs)
+        printf '\nDetected error logs:\n'
+        error_logs=$(spr_discover_error_logs all)
         [[ -n "$error_logs" ]] && printf '%s\n' "$error_logs" || printf '  none found\n'
         ;;
     collect)
         shift
         config=$DEFAULT_CONFIG
-        analyse_nginx=0
-        nginx_log_override=''
-        nginx_host=''
+        analyse_access_log=0
+        access_log_override=''
+        access_host=''
         positional_config=0
         while (( $# )); do
             case "$1" in
-                --analyse-nginx) analyse_nginx=1; shift ;;
-                --nginx-log) [[ $# -ge 2 ]] || spr_die '--nginx-log needs a path'; nginx_log_override=$2; shift 2 ;;
-                --host) [[ $# -ge 2 ]] || spr_die '--host needs a hostname'; nginx_host=$2; shift 2 ;;
+                --analyse-access-log|--analyse-nginx) analyse_access_log=1; shift ;;
+                --access-log|--nginx-log) [[ $# -ge 2 ]] || spr_die "$1 needs a path"; access_log_override=$2; shift 2 ;;
+                --host) [[ $# -ge 2 ]] || spr_die '--host needs a hostname'; access_host=$2; shift 2 ;;
                 --config) [[ $# -ge 2 ]] || spr_die '--config needs a path'; config=$2; shift 2 ;;
                 -*) spr_die "Unknown collect option: $1" ;;
                 *)
@@ -328,39 +349,39 @@ case "$command" in
         else
             spr_warn "Packaging an incomplete run with status: $status"
         fi
-        if (( analyse_nginx )); then
-            nginx_log=${nginx_log_override:-$NGINX_LOG_PATH}
-            if [[ -z "$nginx_log" ]]; then
-                mapfile -t detected_nginx < <(spr_discover_nginx_access_logs)
-                if (( ${#detected_nginx[@]} == 1 )); then
-                    nginx_log=${detected_nginx[0]}
-                    printf 'Using detected Nginx access log: %s\n' "$nginx_log"
+        if (( analyse_access_log )); then
+            access_log=${access_log_override:-$ACCESS_LOG_PATH}
+            if [[ -z "$access_log" ]]; then
+                suggested_log=$(spr_suggest_access_log "$OBSERVED_SITE" "$WEB_SERVER_TYPE")
+                if [[ -n "$suggested_log" ]]; then
+                    access_log=$suggested_log
+                    printf 'Using detected access log: %s\n' "$access_log"
                 else
-                    printf 'Detected Nginx access logs:\n'
-                    if (( ${#detected_nginx[@]} )); then printf '  %s\n' "${detected_nginx[@]}"; else printf '  none found\n'; fi
+                    mapfile -t detected_logs < <(spr_discover_access_logs "$WEB_SERVER_TYPE")
+                    printf 'Detected access logs:\n'
+                    if (( ${#detected_logs[@]} )); then printf '  %s\n' "${detected_logs[@]}"; else printf '  none found\n'; fi
                     if [[ -t 0 ]]; then
-                        ask_required 'Nginx access-log path to analyse' ''
-                        nginx_log=$REPLY
+                        ask_required 'Access-log path to analyse' ''
+                        access_log=$REPLY
                     else
-                        spr_die 'Select a log with --nginx-log PATH'
+                        spr_die 'Select a log with --access-log PATH'
                     fi
                 fi
             fi
-            [[ -r "$nginx_log" ]] || spr_die "Cannot read Nginx access log: $nginx_log"
-            analyser=(python3 "$ROOT/scripts/analyse-nginx.py" --run-dir "$run_dir" --log "$nginx_log")
-            [[ -z "$nginx_host" ]] || analyser+=(--host "$nginx_host")
+            [[ -r "$access_log" ]] || spr_die "Cannot read access log: $access_log"
+            analysis_server=$(spr_infer_web_server_from_log "$access_log" "$WEB_SERVER_TYPE")
+            analyser=(python3 "$ROOT/scripts/analyse-access-log.py" --run-dir "$run_dir" --log "$access_log" --server "$analysis_server")
+            [[ -z "$access_host" ]] || analyser+=(--host "$access_host")
             spr_nice_prefix
             "${SPR_NICE[@]}" "${analyser[@]}"
             "${SPR_NICE[@]}" python3 "$ROOT/scripts/summarise.py" "$run_dir"
             "${SPR_NICE[@]}" python3 "$ROOT/scripts/checksums.py" "$run_dir"
             "$0" validate "$run_dir"
         fi
-        archive="${run_dir}.tar.gz"
-        if [[ ! -f "$archive" || $analyse_nginx == 1 ]]; then
-            command -v tar >/dev/null 2>&1 || spr_die 'tar is required to package the evidence bundle'
+        archive="${run_dir}.zip"
+        if [[ ! -f "$archive" || $analyse_access_log == 1 ]]; then
             spr_nice_prefix
-            "${SPR_NICE[@]}" tar -C "$(dirname -- "$run_dir")" -czf "$archive" "$(basename -- "$run_dir")"
-            chmod 600 "$archive"
+            "${SPR_NICE[@]}" python3 "$ROOT/scripts/archive.py" "$run_dir" --output "$archive" >/dev/null
         fi
         printf '\nRun status: %s\nEvidence directory: %s\nDownload archive: %s\n' "$status" "$run_dir" "$archive"
         ;;
@@ -389,6 +410,9 @@ PY
         if [[ -r "$2/telemetry/system.csv" ]]; then
             rows=$(awk 'END {print (NR > 0 ? NR - 1 : 0)}' "$2/telemetry/system.csv")
             printf 'Samples:   %s\n' "$rows"
+        fi
+        if [[ -f "$2.zip" ]]; then
+            printf 'Archive:   %s.zip\n' "$2"
         fi
         ;;
     wait)

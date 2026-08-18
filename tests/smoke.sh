@@ -19,7 +19,8 @@ SAMPLE_INTERVAL_SECONDS=10
 OUTPUT_ROOT=$workspace/runs
 DISK_DEVICES=$disk_device
 LOW_PRIORITY=1
-NGINX_LOG_PATH=$workspace/access.log
+WEB_SERVER_TYPE=nginx
+ACCESS_LOG_PATH=$workspace/access.log
 EOF
 
 output=$("$ROOT/record" launch "$config")
@@ -49,7 +50,7 @@ with gzip.open(str(log) + ".1.gz", "wt", encoding="utf-8") as target:
     target.write(line(-60, "HIT"))
 PY
 
-"$ROOT/collect" --analyse-nginx --config "$config"
+"$ROOT/collect" --analyse-access-log --config "$config"
 
 python3 - "$run" <<'PY'
 import csv, json, sys
@@ -68,21 +69,28 @@ assert summary["scope"]["server_site_count"] == "10"
 assert summary["scope"]["server_wide_metrics"] is True
 manifest = json.loads((run / "run.json").read_text(encoding="utf-8"))
 assert manifest["status"] == "validated", manifest
+effective = json.loads((run / "config/effective.json").read_text(encoding="utf-8"))
+assert effective["schema_version"] == 2, effective
+assert effective["web_server_type"] == "nginx", effective
+assert effective["access_log_path"].endswith("/access.log"), effective
 assert (run / "SHA256SUMS").stat().st_size > 0
-assert Path(f"{run}.tar.gz").stat().st_size > 0
+archive = Path(f"{run}.zip")
+assert archive.stat().st_size > 0
 assert (run / "runtime/bin/recorder-runner").is_file()
-nginx = json.loads((run / "analysis/nginx-summary.json").read_text(encoding="utf-8"))
-assert nginx["lines"]["classified_in_window"] == 5, nginx
-assert nginx["statuses"]["HIT"]["count"] == 2, nginx
-assert nginx["statuses"]["MISS"]["count"] == 1, nginx
-assert nginx["statuses"]["BYPASS"]["count"] == 1, nginx
-assert nginx["statuses"]["STALE"]["count"] == 1, nginx
-assert nginx["ratios"]["hit_percent"] == 40.0, nginx
-assert nginx["ratios"]["cache_served_percent"] == 60.0, nginx
-assert "analysis/nginx-summary.json" in (run / "SHA256SUMS").read_text(encoding="utf-8")
+access = json.loads((run / "analysis/access-log-summary.json").read_text(encoding="utf-8"))
+assert access["lines"]["requests_in_window"] == 5, access
+assert access["lines"]["with_cache_status"] == 5, access
+assert access["cache"]["statuses"]["HIT"]["count"] == 2, access
+assert access["cache"]["statuses"]["MISS"]["count"] == 1, access
+assert access["cache"]["statuses"]["BYPASS"]["count"] == 1, access
+assert access["cache"]["statuses"]["STALE"]["count"] == 1, access
+assert access["cache"]["ratios"]["hit_percent"] == 40.0, access
+assert access["cache"]["ratios"]["cache_served_percent"] == 60.0, access
+assert "analysis/access-log-summary.json" in (run / "SHA256SUMS").read_text(encoding="utf-8")
 print(f"PASS: {len(rows)} samples at {epochs}")
 print(f"PASS: recorder CPU average {summary['recorder_impact']['cpu_percent']['average']}%")
 print(f"PASS: recorder RSS average {summary['recorder_impact']['rss_mib']['average']} MiB")
 print(f"PASS: evidence bundle {run}")
-print("PASS: Nginx access-log rotations analysed for the exact run window")
+print(f"PASS: automatic download archive {archive}")
+print("PASS: access-log rotations analysed for the exact run window")
 PY

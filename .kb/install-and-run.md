@@ -50,9 +50,9 @@ From inside the cloned directory, run:
 
 Setup asks what you are measuring, how many websites share the server, how long to record, which disks to measure and where to store the evidence. The default recording lasts 24 hours and samples the server every 10 seconds.
 
-At the final question, accept the default to start recording immediately. The recorder detaches from your terminal, so you can close the SSH session after it confirms the run directory and process IDs.
+At the final question, accept the default to start recording immediately. The recorder detaches from your terminal, so you can close the SSH session after it confirms the run directory and process IDs. Once validation succeeds it automatically creates a sibling ZIP containing the complete evidence directory; download the ZIP rather than transferring the directory file by file.
 
-The recorder does not generate website traffic, query the database, copy Nginx logs or scan files. It reads Linux kernel counters and writes one compact CSV row every 10 seconds at low CPU and I/O priority.
+The recorder does not generate website traffic, query the database, copy web-server logs or scan files. It reads Linux kernel counters and writes one compact CSV row every 10 seconds at low CPU and I/O priority.
 
 ## Return after 24 hours
 
@@ -61,18 +61,18 @@ Reconnect to the server and run:
 ```bash
 cd server-performance-recorder
 git pull
-./collect --analyse-nginx
+./collect --analyse-access-log
 ```
 
-This finds the remembered run, analyses the selected Nginx access log and its rotations for the same time window, verifies the evidence and creates a `.tar.gz` archive ready to download. The original evidence directory and Nginx logs remain intact.
+This finds the remembered run, analyses the selected Nginx, Apache or LiteSpeed access log and its rotations for the same time window, verifies the evidence and refreshes the download-ready `.zip`. The original evidence directory and web-server logs remain intact.
 
-If setup did not store an access-log path, the collector lists the paths it can detect. When there is more than one, it asks which one to use. You can also specify it directly:
+Setup checks RunCloud's `~/logs/nginx`, `~/logs/apache2` and `~/logs` layouts as well as common system locations. If it did not store an access-log path, the collector lists the paths it can detect. When there is more than one, it asks which one to use. You can also specify it directly:
 
 ```bash
-./collect --analyse-nginx --nginx-log /var/log/nginx/example.com.access.log
+./collect --analyse-access-log --access-log /var/log/nginx/example.com.access.log
 ```
 
-The access-log format needs to contain `$upstream_cache_status` for the cache-ratio report. If it does not, the server recording is still valid, but HIT, MISS and BYPASS cannot be recovered from that log after the fact.
+Standard combined logs provide request, method and HTTP response-status counts. Cache ratios additionally need recognisable cache-status values in the configured log format. If those are absent, the server and request evidence remain valid, but HIT, MISS and BYPASS cannot be recovered after the fact.
 
 If you want to check progress before the recording finishes, use the exact run directory printed by setup:
 

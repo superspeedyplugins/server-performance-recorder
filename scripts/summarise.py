@@ -160,9 +160,9 @@ def main() -> int:
             "evidence_bytes": bundle_bytes,
         },
     }
-    nginx_path = run / "analysis" / "nginx-summary.json"
-    if nginx_path.is_file():
-        summary["nginx"] = json.loads(nginx_path.read_text(encoding="utf-8"))
+    access_log_path = run / "analysis" / "access-log-summary.json"
+    if access_log_path.is_file():
+        summary["access_log"] = json.loads(access_log_path.read_text(encoding="utf-8"))
 
     (run / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     site_count = summary["scope"]["server_site_count"]
@@ -186,7 +186,7 @@ def main() -> int:
 - Recorder RSS: average {fmt(metrics['recorder_rss_mib']['average'], ' MiB')}, peak {fmt(metrics['recorder_rss_mib']['max'], ' MiB')}
 - Evidence size at summary time: {bundle_bytes / 1024 / 1024:.2f} MiB
 
-The CPU, RAM, load, disk and network figures are server-wide. Nginx request/cache analysis, when attached, is site-specific only if the supplied access log or host filter is site-specific.
+The CPU, RAM, load, disk and network figures are server-wide. Access-log request/cache analysis, when attached, is site-specific only if the supplied access log or host filter is site-specific.
 """
     (run / "report.md").write_text(report, encoding="utf-8")
     return 0

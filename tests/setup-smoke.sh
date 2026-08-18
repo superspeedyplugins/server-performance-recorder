@@ -12,7 +12,7 @@ disk_device=$(find /sys/class/block -mindepth 1 -maxdepth 1 -type l -printf '%f\
 config="$workspace/private/config.conf"
 output="$workspace/evidence"
 
-printf 'before-interactive\nshop.example.invalid\n10\n\n1\n%s\n\n%s\nn\n' "$disk_device" "$output" |
+printf 'before-interactive\nshop.example.invalid\n10\n\n1\n%s\n\n\n%s\nn\n' "$disk_device" "$output" |
     script -qefc "$ROOT/setup $config" /dev/null
 
 [[ -f "$config" ]]
@@ -26,4 +26,6 @@ source "$config"
 [[ "$SAMPLE_INTERVAL_SECONDS" == 10 ]]
 [[ "$DISK_DEVICES" == "$disk_device" ]]
 [[ "$OUTPUT_ROOT" == "$output" ]]
+[[ -n "$WEB_SERVER_TYPE" ]]
+[[ ${ACCESS_LOG_PATH+x} ]]
 printf 'PASS: interactive setup created a private mode-600 config\n'

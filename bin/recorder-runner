@@ -70,4 +70,6 @@ python3 "$ROOT/scripts/manifest.py" "$manifest" set status=summarised
 python3 "$ROOT/scripts/validate.py" "$run_dir" > "$run_dir/validation.txt"
 "${SPR_NICE[@]}" python3 "$ROOT/scripts/checksums.py" "$run_dir"
 python3 "$ROOT/scripts/manifest.py" "$manifest" set status=validated validation.status=passed
+archive="${run_dir}.zip"
+python3 "$ROOT/scripts/archive.py" "$run_dir" --output "$archive" >/dev/null 2>&1 || true
 printf '%s\n' "validated" > "$run_dir/control/terminal"

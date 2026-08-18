@@ -4,7 +4,7 @@
 
 `telemetry/system.csv` records whole-server Linux kernel counters. It does not claim to isolate one site. `OBSERVED_SITE`, `SERVER_SITE_COUNT` and `ENVIRONMENT_NOTE` preserve the qualification needed later, for example: the optimised site was one of ten sites sharing the observed server.
 
-Existing Nginx logs remain the source for site-specific request and cache counts. `run.json` supplies the exact UTC epoch window. `config/effective.json` records the intended Nginx log path without reading or copying that log during the live recording.
+Existing Nginx, Apache, OpenLiteSpeed or LiteSpeed logs remain the source for site-specific request counts. `run.json` supplies the exact UTC epoch window. `config/effective.json` records the detected server type and intended access-log path without reading or copying that log during the live recording.
 
 ## Sampling cost
 
@@ -49,17 +49,21 @@ Every launch creates a new directory and refuses to overwrite an old one. The im
 - `inventory/start.txt` and `inventory/end.txt`: host/filesystem/software context
 - `summary.json`: small integrity and descriptive-statistics summary, not a presentation format
 - `report.md`: human-readable spot check
-- `analysis/nginx-summary.json`: optional machine-readable cache counts and ratios
-- `analysis/nginx-report.md`: optional human-readable cache report
+- `analysis/access-log-summary.json`: optional machine-readable request, HTTP response and cache counts
+- `analysis/access-log-report.md`: optional human-readable access-log report
 - `validation.txt`: coverage and safety-floor validation
 - `SHA256SUMS`: evidence integrity inventory
 
 The original shell config is never copied into the evidence bundle.
 
-## Later Nginx analysis
+After successful validation, the recorder creates `<run-directory>.zip` beside the evidence directory. It writes to a private temporary file and renames it only after the ZIP is complete, so an incomplete archive never appears under the download filename. The ZIP contains the run directory as its top-level folder. Running `collect --analyse-access-log` refreshes it after adding access-log analysis.
 
-For cache analysis, the access-log format needs a parseable timestamp and `$upstream_cache_status`. If the server uses a shared access log, its format must also include `$host` for `--host` filtering. Preserve every rotated and gzipped log that overlaps the `start_epoch` to `end_epoch` window.
+## Later access-log analysis
 
-`collect --analyse-nginx` streams the selected log and normal rotations, filters rows to the exact recorder window and keeps HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED separate. Its denominator is requests in the window containing exactly one recognised cache status. Lines without a recognised status are reported as unclassified and are not silently treated as misses.
+The analyser accepts standard combined logs from Nginx, Apache, OpenLiteSpeed and LiteSpeed, plus JSON logs with conventional timestamp, response-status and method keys. If the server uses a shared access log, its format must also include the host for `--host` filtering. Preserve every rotated and gzipped log that overlaps the `start_epoch` to `end_epoch` window.
+
+`collect --analyse-access-log` streams the selected log and normal rotations, filters rows to the exact recorder window, then counts requests, methods and HTTP response statuses. RunCloud's dot- and date-suffixed compressed rotations are included.
+
+When the log format includes a recognised cache-status field, the analyser keeps HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED separate. The cache-ratio denominator is requests in the window containing exactly one recognised cache status. A standard combined log without cache status still produces valid request and HTTP response counts; missing cache data is never treated as a miss.
 
 The derived report also provides a cache-served ratio combining HIT, STALE, UPDATING and REVALIDATED. Raw logs remain outside the evidence bundle. The recorder does not prescribe the later chart or client-reporting system.

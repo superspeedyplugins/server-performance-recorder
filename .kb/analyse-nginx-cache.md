@@ -1,63 +1,63 @@
-# Analyse Nginx cache outcomes
+# Analyse web-server access logs
 
-The server recording measures whole-server CPU, RAM, load, disk I/O and network activity. Nginx access logs provide the second half of the before-and-after evidence: request volume and the cache outcome for each logged request.
+The server recording measures whole-server CPU, RAM, load, disk I/O and network activity. Nginx, Apache, OpenLiteSpeed and LiteSpeed access logs provide the second half of the before-and-after evidence: request volume, HTTP responses and, when logged, cache outcomes.
 
 ## Find the logs
 
 Run:
 
 ```bash
-./record nginx-logs
+./record web-logs
 ```
 
-This lists access and error log paths found in the expanded Nginx configuration and under `/var/log/nginx`. Setup runs the same access-log discovery before asking which log belongs to the site being measured.
+This detects the active web-server family and lists access and error log paths. It checks expanded Nginx configuration plus common Nginx, Apache and LiteSpeed locations. For RunCloud application owners it checks `~/logs/nginx`, `~/logs/apache2` and the OpenLiteSpeed files directly under `~/logs`.
 
 The cache analysis uses an access log. Error logs remain useful for diagnosing faults, but they are not used to calculate cache ratios.
 
-The recorder only lists and reads existing logs. It does not edit or reload Nginx.
+The recorder only lists and reads existing logs. It does not edit or reload the web server.
 
-## Required log field
+## Standard request analysis
 
-The selected access-log format must contain `$upstream_cache_status`. A standard combined log normally has timestamps, URLs, status codes, referrers and user agents, but no cache outcome.
+Standard combined logs have the timestamp, request method and HTTP response status needed for request analysis. The analyser also accepts JSON logs with conventional field names.
 
-Without `$upstream_cache_status`, the recorder cannot determine later whether a request was a HIT, MISS or BYPASS. In that case it preserves the server evidence and writes a clear insufficient-data warning in the Nginx analysis report.
+Cache analysis needs cache outcomes to be included in the configured log format. Nginx commonly uses `$upstream_cache_status`; LiteSpeed and Apache need the equivalent cache value added to their format. Without it, request and response counts remain valid, while cache ratios are shown as unavailable.
 
 ## Collect and analyse
 
 After the recording reaches a terminal state, run:
 
 ```bash
-./collect --analyse-nginx
+./collect --analyse-access-log
 ```
 
 To override the stored path:
 
 ```bash
-./collect --analyse-nginx --nginx-log /var/log/nginx/example.com.access.log
+./collect --analyse-access-log --access-log /var/log/nginx/example.com.access.log
 ```
 
 If a shared access log contains several virtual hosts, add a host filter:
 
 ```bash
-./collect --analyse-nginx \
-  --nginx-log /var/log/nginx/access.log \
+./collect --analyse-access-log \
+  --access-log /var/log/nginx/access.log \
   --host shop.example.com
 ```
 
-The analyser reads the named log plus normal rotations such as `.1` and `.2.gz`. It streams them one line at a time at CPU nice level 19 and idle I/O priority where available. It does not unpack whole files into memory, copy the raw logs or run during the 24-hour observation.
+The analyser reads the named log plus dot-suffixed rotations such as `.1` and `.2.gz` and RunCloud date-suffixed rotations such as `-20260817.gz`. It streams them one line at a time at CPU nice level 19 and idle I/O priority where available. It does not unpack whole files into memory, copy the raw logs or run during the observation.
 
 Analysis is limited to the exact start and end epochs stored in `run.json`. Results are written to:
 
 ```text
-analysis/nginx-summary.json
-analysis/nginx-report.md
+analysis/access-log-summary.json
+analysis/access-log-report.md
 ```
 
 Both files are included in the evidence checksums and archive.
 
-## Reading the ratios
+## Reading the result
 
-The report keeps the seven Nginx cache outcomes separate:
+The report first gives requests, methods and exact HTTP response-status counts. When cache outcomes are present, it keeps these seven values separate:
 
 - `HIT`
 - `MISS`
@@ -71,4 +71,4 @@ HIT ratio is `HIT / all requests with one recognised cache status`.
 
 MISS and BYPASS use the same denominator. The report also shows a cache-served ratio combining HIT, STALE, UPDATING and REVALIDATED. It does not silently treat unclassified access-log lines as cache misses.
 
-If the log is site-specific, the ratios are site-specific. If the log is shared and no host filter is used, the ratios cover everything in that log. Keep that scope qualification with any client-facing before-and-after result.
+If the log is site-specific, the request counts and ratios are site-specific. If the log is shared and no host filter is used, they cover everything in that log. Keep that scope qualification with any client-facing before-and-after result.

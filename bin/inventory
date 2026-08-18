@@ -22,7 +22,14 @@ phase=${2:?phase required}
     printf '\n[memory]\n'
     sed -n '1,30p' /proc/meminfo 2>/dev/null || true
     printf '\n[software]\n'
-    nginx -v 2>&1 || true
+    for web_server in nginx apache2 httpd apache2ctl apachectl openlitespeed lshttpd; do
+        if command -v "$web_server" >/dev/null 2>&1; then
+            "$web_server" -v 2>&1 | sed -n '1,3p' || true
+        fi
+    done
+    if [[ -x /usr/local/lsws/bin/lshttpd ]] && ! command -v lshttpd >/dev/null 2>&1; then
+        /usr/local/lsws/bin/lshttpd -v 2>&1 | sed -n '1,3p' || true
+    fi
     php -v 2>/dev/null | sed -n '1,2p' || true
     mysql --version 2>/dev/null || true
     redis-server --version 2>/dev/null || true

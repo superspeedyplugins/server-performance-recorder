@@ -45,32 +45,44 @@ Setup asks:
 - how many websites share the server;
 - how long to record;
 - which block devices contain the relevant data;
-- where the existing Nginx access log lives, if relevant;
+- which web server is in use and where its existing access log lives;
 - where to keep the evidence.
 
-Accept the default to launch immediately. The recorder detaches from the terminal, so you can close SSH and return after 24 hours.
+Accept the default to launch immediately. The recorder detaches from the terminal, so you can close SSH and return after 24 hours. A successful recording is validated and then atomically packaged as a sibling `<run-id>.zip`; download that one file rather than the run directory.
 
 Then run:
 
 ```bash
-./collect --analyse-nginx
+./collect --analyse-access-log
 ```
 
-`./collect --analyse-nginx` finds the remembered run, reads the selected access log and its rotations for the exact recording window, then creates a `.tar.gz` evidence archive ready to download. It leaves the uncompressed run directory and the original Nginx logs intact. Use plain `./collect` if you only want the server recording.
+`./collect --analyse-access-log` finds the remembered run, reads the selected access log and its rotations for the exact recording window, then refreshes the `.zip` so it includes the added analysis. It leaves the uncompressed run directory and original logs intact. Plain `./collect` creates the ZIP on demand for recordings made with an older recorder version.
 
 To list the access and error logs the recorder can detect:
 
 ```bash
-./record nginx-logs
+./record web-logs
 ```
 
 If setup did not store the right access log, specify it when collecting:
 
 ```bash
-./collect --analyse-nginx --nginx-log /var/log/nginx/example.com.access.log
+./collect --analyse-access-log --access-log /var/log/nginx/example.com.access.log
 ```
 
-The access-log format must include `$upstream_cache_status`. Standard combined logs usually do not, so finding a log file does not guarantee that cache HIT, MISS and BYPASS ratios can be calculated. The recorder reports this clearly and never changes Nginx configuration.
+Nginx, Apache, OpenLiteSpeed and LiteSpeed Enterprise standard combined logs all provide request and HTTP response-status counts. Cache HIT, MISS and BYPASS ratios are also reported when the configured log format contains recognisable cache-status values. The recorder reports missing cache fields clearly and never changes web-server configuration.
+
+RunCloud owner-account layouts are detected without root access:
+
+| Stack | RunCloud access-log layout |
+|---|---|
+| Nginx | `~/logs/nginx/<app>_access.log` |
+| Apache | `~/logs/apache2/<app>_access.log` |
+| OpenLiteSpeed | `~/logs/<app>_access.log` |
+
+Common system layouts under `/var/log/nginx`, `/var/log/apache2`, `/var/log/httpd` and `/usr/local/lsws` are also detected. If both Nginx and Apache logs match a RunCloud site, setup defaults to the front-end Nginx log so cached requests are not omitted.
+
+Existing configs using `NGINX_LOG_PATH` and existing commands using `--analyse-nginx` or `--nginx-log` remain supported as aliases.
 
 ## Checking progress
 
@@ -120,13 +132,15 @@ Each run contains a snapshot of the exact recorder runtime it started with. Pull
 
 The recorded CPU, RAM, load, disk and network measurements cover the whole server. They do not pretend to isolate one website. Record the number of hosted sites during setup so reports can say, for example, that the changed site was one of ten sites sharing the measured server.
 
-Existing access logs can later provide site-specific request and cache HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED counts for the exact epoch window recorded in `run.json`. The recorder stores the intended Nginx log path as provenance but does not read that log while recording. Analysis happens only when `collect --analyse-nginx` is run, at low CPU and I/O priority, and the raw logs are not copied into the evidence bundle.
+Existing access logs can later provide site-specific request and HTTP response counts for the exact epoch window recorded in `run.json`. If the log format contains cache status, HIT, MISS, BYPASS, EXPIRED, STALE, UPDATING and REVALIDATED counts are included too. The recorder stores the intended log path as provenance but does not read that log while recording. Analysis happens only when `collect --analyse-access-log` is run, at low CPU and I/O priority, and raw logs are not copied into the evidence bundle.
 
 See the [data contract](docs/data-contract.md) for every raw field and unit.
 
 For the full server installation walkthrough, including why GitHub's SSH clone URL requires a key even for a public repository, see [Install and run Server Performance Recorder](.kb/install-and-run.md).
 
-For log discovery, rotations, cache-ratio definitions and command options, see [Analyse Nginx cache outcomes](.kb/analyse-nginx-cache.md).
+For command-only installation, progress, collection and download instructions, see the [Quick Start Guide](.kb/quick-start-guide.md).
+
+For log discovery, rotations, request counts, cache-ratio definitions and command options, see [Analyse web-server access logs](.kb/analyse-nginx-cache.md).
 
 ## Tests
 
@@ -134,6 +148,7 @@ The test suite includes:
 
 - a real Linux collection, validation and archive lifecycle test;
 - an interactive pseudo-terminal setup test;
+- Nginx, Apache, OpenLiteSpeed and LiteSpeed discovery/combined-log fixtures;
 - shell and Python syntax checks.
 
 Run the Linux tests from a suitable Linux host or container:
@@ -141,5 +156,6 @@ Run the Linux tests from a suitable Linux host or container:
 ```bash
 ./tests/setup-smoke.sh
 ./tests/nginx-discovery-smoke.sh
+./tests/access-log-smoke.sh
 ./tests/smoke.sh
 ```
