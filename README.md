@@ -64,7 +64,7 @@ Preview the exact input without reading log contents or writing analysis/archive
 ./collect --analyse-access-log --dry-run
 ```
 
-The preview reports every selected rotation, its compressed on-disk size and the input ceiling. Real analysis streams compressed logs without extracting or copying them and prints file/line progress to the terminal. Use `--max-input-bytes 2147483648` to impose a 2 GiB on-disk ceiling; a limited result is marked incomplete.
+The preview reports every selected rotation, rotations skipped as outside the recorder window, compressed on-disk sizes and the input ceiling. Date-suffixed RunCloud rotations are treated as rotation boundaries, so a completed four-hour window does not scan days of unrelated history. Real analysis streams compressed logs without extracting or copying them and prints file/line progress to the terminal. Use `--max-input-bytes 2147483648` to impose a 2 GiB on-disk ceiling; a limited result is marked incomplete.
 
 To list the access and error logs the recorder can detect:
 

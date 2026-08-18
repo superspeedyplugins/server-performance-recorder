@@ -143,6 +143,51 @@ def rotated_files(base: Path) -> list[Path]:
     return sorted(unique.values(), key=lambda item: rotation_sort_key(base, item))
 
 
+def dated_rotation_boundary(base: Path, path: Path) -> datetime | None:
+    if path == base:
+        return None
+    suffix = path.name[len(base.name):]
+    matched = re.fullmatch(r"-(\d{8}|\d{10}|\d{12}|\d{14})(?:\.gz)?", suffix)
+    if not matched:
+        return None
+    raw = matched.group(1)
+    formats = {8: "%Y%m%d", 10: "%Y%m%d%H", 12: "%Y%m%d%H%M", 14: "%Y%m%d%H%M%S"}
+    try:
+        return datetime.strptime(raw, formats[len(raw)])
+    except ValueError:
+        return None
+
+
+def files_for_window(base: Path, files: Iterable[Path], start: int, end: int) -> tuple[list[Path], list[Path]]:
+    """Use dateext rotation names as interval boundaries without reading log contents."""
+    base = base.resolve()
+    ordered = list(files)
+    dated = [(path, dated_rotation_boundary(base, path)) for path in ordered]
+    boundaries = sorted({boundary for _, boundary in dated if boundary is not None})
+    if not boundaries:
+        return ordered, []
+
+    start_time = datetime.fromtimestamp(start)
+    end_time = datetime.fromtimestamp(end)
+    closing_boundary = next((boundary for boundary in boundaries if boundary > end_time), None)
+    selected: list[Path] = []
+    skipped: list[Path] = []
+    for path, rotation_boundary in dated:
+        if rotation_boundary is None:
+            if path != base or closing_boundary is None:
+                selected.append(path)
+            else:
+                skipped.append(path)
+            continue
+        if rotation_boundary > start_time and (
+            closing_boundary is None or rotation_boundary <= closing_boundary
+        ):
+            selected.append(path)
+        else:
+            skipped.append(path)
+    return selected, skipped
+
+
 def open_log(path: Path):
     if path.suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
@@ -182,7 +227,14 @@ def input_plan(files: Iterable[Path], ceiling: int) -> tuple[list[tuple[Path, in
     return selected, skipped
 
 
-def print_dry_run(start: int, end: int, selected: list[tuple[Path, int]], skipped: list[tuple[Path, int]], ceiling: int) -> None:
+def print_dry_run(
+    start: int,
+    end: int,
+    selected: list[tuple[Path, int]],
+    skipped_outside_window: list[tuple[Path, int]],
+    skipped_over_ceiling: list[tuple[Path, int]],
+    ceiling: int,
+) -> None:
     total = sum(size for _, size in selected)
     print("# Access-log analysis dry run")
     print(f"Recorder window: {start} to {end}, inclusive")
@@ -195,7 +247,9 @@ def print_dry_run(start: int, end: int, selected: list[tuple[Path, int]], skippe
     print("Selection\tOn-disk size\tPath")
     for path, size in selected:
         print(f"READ\t{display_bytes(size)}\t{path}")
-    for path, size in skipped:
+    for path, size in skipped_outside_window:
+        print(f"SKIP (outside window)\t{display_bytes(size)}\t{path}")
+    for path, size in skipped_over_ceiling:
         print(f"SKIP (over ceiling)\t{display_bytes(size)}\t{path}")
     print()
     print("Dry run: no log contents were read and no analysis or archive files were created.")
@@ -223,14 +277,22 @@ def main() -> int:
     end = int(timestamps.get("end_epoch") or timestamps["planned_end_epoch"])
 
     files: dict[str, Path] = {}
+    outside_window: dict[str, Path] = {}
     for base in args.log:
-        for path in rotated_files(base):
+        rotated = rotated_files(base)
+        window_files, window_skipped = files_for_window(base.resolve(), rotated, start, end)
+        for path in window_files:
             files[str(path)] = path
+            outside_window.pop(str(path), None)
+        for path in window_skipped:
+            if str(path) not in files:
+                outside_window[str(path)] = path
     if not files:
         raise SystemExit("No readable access logs or rotations were found")
     selected_files, skipped_files = input_plan(files.values(), args.max_input_bytes)
+    outside_window_files = [(path, path.stat().st_size) for path in outside_window.values()]
     if args.dry_run:
-        print_dry_run(start, end, selected_files, skipped_files, args.max_input_bytes)
+        print_dry_run(start, end, selected_files, outside_window_files, skipped_files, args.max_input_bytes)
         return 0
     if not selected_files:
         raise SystemExit("The first access log exceeds --max-input-bytes; no log contents were read")

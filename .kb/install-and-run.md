@@ -72,6 +72,8 @@ Preview the selected logs and their on-disk size without reading their contents 
 ./collect --analyse-access-log --dry-run
 ```
 
+Date-suffixed RunCloud rotations that cannot overlap the recorder window are shown as `SKIP (outside window)` and are not scanned.
+
 Setup checks RunCloud's `~/logs/nginx`, `~/logs/apache2` and `~/logs` layouts as well as common system locations. If it did not store an access-log path, the collector lists the paths it can detect. When there is more than one, it asks which one to use. You can also specify it directly:
 
 ```bash

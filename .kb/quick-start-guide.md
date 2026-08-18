@@ -81,6 +81,8 @@ The completed status is `validated`.
 ./collect --analyse-access-log --dry-run
 ```
 
+Check the `READ` rows. Date-suffixed RunCloud rotations outside the recorder window are automatically shown as `SKIP (outside window)`.
+
 ## Limit access-log input to 2 GiB
 
 ```bash

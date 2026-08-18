@@ -36,7 +36,7 @@ After the recording reaches a terminal state, run:
 ./collect --analyse-access-log
 ```
 
-The real analysis prints the current file, lines scanned, requests found in the recorder window and lines per second. Limit the on-disk input when a server retains more history than you want to scan:
+The preview marks date-suffixed RunCloud rotations that cannot overlap the recorder window as `SKIP (outside window)`. The real analysis prints the current file, lines scanned, requests found in the recorder window and lines per second. Limit the remaining on-disk input when a server retains more relevant history than you want to scan:
 
 ```bash
 ./collect --analyse-access-log --max-input-bytes 2147483648
@@ -58,7 +58,7 @@ If a shared access log contains several virtual hosts, add a host filter:
   --host shop.example.com
 ```
 
-The analyser reads the named log plus dot-suffixed rotations such as `.1` and `.2.gz` and RunCloud date-suffixed rotations such as `-20260817.gz`. It streams them one line at a time at CPU nice level 19 and idle I/O priority where available. It does not unpack whole files into memory, copy the raw logs or run during the observation.
+The analyser reads the named log plus dot-suffixed rotations such as `.1` and `.2.gz`. RunCloud date-suffixed rotations such as `-20260818` are treated as interval boundaries, so only rotations that can contain the recorder window are read. It streams them one line at a time at CPU nice level 19 and idle I/O priority where available. It does not unpack whole files into memory, copy the raw logs or run during the observation.
 
 Analysis is limited to the exact start and end epochs stored in `run.json`. Results are written to:
 
